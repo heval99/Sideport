@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sideport
 // @namespace    https://github.com/heval99/sideport
-// @version      1.1.2
+// @version      1.0.0
 // @description  Get any Google Play app as an APK: direct downloads from 6 sources, APK stores, Morphe patches, open-source alternatives and opt-in mod sites — one button on every app page.
 // @author       heval99
 // @license      PolyForm-Noncommercial-1.0.0
