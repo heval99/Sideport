@@ -4,10 +4,13 @@
 
 Sideport is a userscript that adds a **Get APK** button next to *Install* on Google Play. It finds the app on trusted APK sources, checks which ones actually have it, and downloads it in one click. It also tells you when [Morphe](https://morphe.software/) patches exist for the app.
 
-<!-- Screenshots: add docs/button.png and docs/menu.png, then uncomment:
-![Get APK button and Morphe badge](docs/button.png)
-![Sources menu](docs/menu.png)
--->
+![Sideport on a Google Play app page: the Get APK button and Morphe badge next to Install](docs/play-page.png)
+
+<p align="center">
+  <img src="docs/menu.png" width="346" alt="The Get APK menu: direct-download sources with live availability and versions, then stores and mirrors">
+  <br>
+  <sub>The Get APK menu checks every source in the background and shows which ones have the app.</sub>
+</p>
 
 ## Install
 
