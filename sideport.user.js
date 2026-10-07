@@ -60,6 +60,7 @@
     const MORPHE_BLUE = '#1E5AA8';
     const MORPHE_TEAL = '#00AFAE';
     const DONATE_URL = 'https://ko-fi.com/heval99';
+    const AUTHOR_PATCHES_URL = 'https://github.com/heval99/Heval-Morphe-Patches';
     const SVG_NS = 'http://www.w3.org/2000/svg';
     // A dotted version, but not a file size ("60.2 MB") or a minimum Android version ("Android 5.0+").
     const VERSION_RE = /(?<!Android\s?)(?<![\d.])\d+(?:\.\d+){1,4}(?![\d.])(?!\s*(?:[KMG]i?B|%|\+))/i;
@@ -858,7 +859,11 @@
             el('div', { className: 'pas-support-card' },
                 el('span', { className: 'pas-row-text' },
                     el('span', { className: 'pas-row-label', text: 'Enjoying Sideport?' }),
-                    el('span', { className: 'pas-row-sub pas-wrap', text: 'It’s free, with no ads or tracking. A coffee on Ko-fi keeps it maintained.' })),
+                    el('span', { className: 'pas-row-sub pas-wrap', text: 'It’s free, with no ads or tracking. A coffee on Ko-fi keeps it maintained.' }),
+                    el('a', {
+                        className: 'pas-more-link', href: AUTHOR_PATCHES_URL, target: '_blank', rel: 'noopener noreferrer',
+                        title: 'Morphe patches by heval99 on GitHub'
+                    }, icon('extension'), 'Check out my Morphe patches →')),
                 supportLink('Ko-fi', 'pas-support-filled')));
 
         menu.body.replaceChildren(general, support, ...groups);
@@ -2050,6 +2055,9 @@
                 background: color-mix(in srgb, #ff5e5b 9%, var(--pas-surface));
             }
             .pas-wrap { white-space: normal; }
+            .pas-more-link { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; color: var(--pas-primary); font: 500 12px/16px "Google Sans", Roboto, Arial, sans-serif; text-decoration: none; }
+            .pas-more-link:hover { text-decoration: underline; }
+            .pas-more-link .pas-icon { width: 14px; height: 14px; color: ${MORPHE_TEAL}; }
             .pas-support-filled { flex: none; background: #ff5e5b; color: #fff; }
             .pas-support-filled .pas-icon { color: #fff; }
             .pas-support-filled:hover { background: #e94e4b; }

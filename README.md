@@ -73,6 +73,10 @@ Open the menu → **Settings**, or use your userscript manager's menu:
 
 Sideport is free, with no ads or tracking. If it saves you time, you can support development on **[Ko-fi ♥](https://ko-fi.com/heval99)**. You'll also find a *Support* link in the menu and your userscript manager's menu.
 
+## More from heval99
+
+🧩 **[Heval Morphe Patches](https://github.com/heval99/Heval-Morphe-Patches)**: my own Morphe patch bundle for apps like Sofascore, BeSoccer and BoxBox, covering ad and telemetry removal and more. If Sideport shows a *Morphe* badge on one of those apps, my bundle is among the results.
+
 ## Credits
 
 - Google Play install-button detection and the price-tag check are adapted from [Direct download from Google Play](https://greasyfork.org/scripts/33005) by **StephenP**, the userscript that inspired Sideport.
