@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sideport
 // @namespace    https://github.com/heval99/sideport
-// @version      1.1.0
+// @version      1.1.1
 // @description  Get any Google Play app as an APK: direct downloads from 6 sources, APK stores, Morphe patches, open-source alternatives and opt-in mod sites — one button on every app page.
 // @author       heval99
 // @license      PolyForm-Noncommercial-1.0.0
@@ -206,6 +206,7 @@
         removals: [],  // timestamps of recent removals by Play, for churn detection
         strategy: 0,   // index into MOUNT_STRATEGIES
         lastMountAt: 0,
+        hiddenPlacements: 0, // placements skipped because Play's widget was hidden
         dismissedRoute: '',
         mount: null,   // { root, anchor, ctx, widget }
         menu: null,    // persistent menu for the current route
@@ -265,6 +266,7 @@
             state.remounts = 0;
             state.removals = [];
             state.strategy = 0;
+            state.hiddenPlacements = 0;
         }
         if (!route || state.dismissedRoute === key) return;
 
@@ -362,6 +364,17 @@
         const root = el('div', { className: `pas-root pas-mount ${strategy === 'row' ? 'pas-after-row' : 'pas-inline'}` }, anchor);
         target.after(root);
         setMount(root, anchor, ctx, widget);
+        // If Play rendered this widget inside a hidden container, our button is invisible too: move on to the
+        // next placement (after the row, then next to the title) instead of staying hidden.
+        window.requestAnimationFrame(() => {
+            if (state.mount?.root !== root || !root.isConnected || !hasLayout() || isRendered(root)) return;
+            state.strategy = Math.max(state.strategy, MOUNT_STRATEGIES.indexOf(strategy) + 1);
+            state.hiddenPlacements += 1;
+            closeMenu(false);
+            root.remove();
+            state.mount = null;
+            scheduleRender();
+        });
     }
 
     function mountAfterHeading(heading, ctx) {
@@ -500,16 +513,29 @@
     const WIDGET_SELECTOR = "[data-item-id^='%.@.']";
 
     function findActionWidget(packageId) {
-        const widgets = document.querySelectorAll(WIDGET_SELECTOR);
-        if (!packageId) return widgets[0] || null;
-        const exact = [...widgets].find(widget => packageFromWidget(widget) === packageId);
+        const widgets = [...document.querySelectorAll(WIDGET_SELECTOR)];
+        // Signed in, Play can keep a hidden Install widget next to the visible "Install on more devices" one,
+        // so prefer a widget that is actually on screen.
+        const pick = candidates => candidates.find(isRendered) || candidates[0] || null;
+        if (!packageId) return pick(widgets);
+        const exact = pick(widgets.filter(widget => packageFromWidget(widget) === packageId));
         if (exact) return exact;
         // Safety net in case Play changes the "%.@." prefix: any data-item-id carrying the quoted package
         // that wraps a button.
         const quoted = `"${packageId}"`;
-        return [...document.querySelectorAll('[data-item-id]')].find(element =>
+        return pick([...document.querySelectorAll('[data-item-id]')].filter(element =>
             element.getAttribute('data-item-id').includes(quoted) && element.querySelector('button, [role="button"]')
-            && !element.closest('.pas-root')) || null;
+            && !element.closest('.pas-root')));
+    }
+
+    // True when the browser actually lays the element out (false inside display:none / hidden containers).
+    function isRendered(node) {
+        return node.getClientRects().length > 0;
+    }
+
+    // jsdom-like environments have no layout at all; visibility checks only mean something with a real one.
+    function hasLayout() {
+        return document.documentElement.getBoundingClientRect().height > 0;
     }
 
     function packageFromWidget(widget) {
@@ -1997,9 +2023,10 @@
             signedIn: Boolean(document.querySelector('[aria-label*="Google Account" i], [aria-label*="account menu" i] img, a[href*="SignOutOptions"]')),
             route: route?.key || null,
             widgets: [...document.querySelectorAll('[data-item-id]')]
-                .map(element => element.getAttribute('data-item-id'))
-                .filter(value => value.includes('"'))
-                .slice(0, 5),
+                .filter(element => element.getAttribute('data-item-id').includes('"'))
+                .slice(0, 5)
+                .map(element => `${element.getAttribute('data-item-id')}${isRendered(element) ? '' : ' (hidden)'} [${cleanText(element.textContent).slice(0, 30)}]`),
+            hiddenPlacementsSkipped: state.hiddenPlacements,
             mounted: Boolean(mount?.root.isConnected),
             mountStrategy: MOUNT_STRATEGIES[state.strategy],
             removalsByPlay: state.remounts,

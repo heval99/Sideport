@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1 — 2026-10-07
+
+- **Fixed:** no button on signed-in pages of apps already on your devices ("Install on more devices", e.g. Gboard and YouTube). Play keeps a hidden Install widget there; Sideport now prefers the visible one, and if its button would end up hidden it moves it after the button row or next to the app title.
+- **Copy diagnostics** now reports which Play widgets are hidden.
+
 ## 1.1.0 — 2026-10-07
 
 - **Fixed:** the button could disappear on pages where Play keeps redrawing its button row (seen on YouTube when signed in). Sideport now moves the button next to the app title instead of giving up.
