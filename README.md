@@ -1,5 +1,10 @@
 # Sideport
 
+[![Version](https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fraw.githubusercontent.com%2Fheval99%2FSideport%2Fmain%2Fsideport.user.js&search=%40version%5Cs%2B(%5CS%2B)&replace=v%241&label=version&color=0b57d0)](https://github.com/heval99/sideport/raw/main/sideport.user.js)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-555)](LICENSE.md)
+[![GitHub stars](https://img.shields.io/github/stars/heval99/Sideport?style=flat&color=e3b341)](https://github.com/heval99/Sideport/stargazers)
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/heval99)
+
 **Get any Google Play app as an APK — one button on every app page.**
 
 Sideport is a userscript that adds a **Get APK** button next to *Install* on Google Play. It finds the app on trusted APK sources, checks which ones actually have it, and downloads it in one click. It also tells you when [Morphe](https://morphe.software/) patches exist for the app.
@@ -22,7 +27,9 @@ Sideport is a userscript that adds a **Get APK** button next to *Install* on Goo
 2. **[Click here to install Sideport](https://github.com/heval99/sideport/raw/main/sideport.user.js)** and confirm in the manager.
 3. Open any app on [play.google.com](https://play.google.com/store/apps).
 
-The first time Sideport checks a source, your userscript manager asks whether the script may connect to that site. Choose **Always allow** (or allow each domain once). Updates install automatically through your userscript manager.
+The first time Sideport checks a source, your userscript manager asks whether the script may connect to that site. Choose **Always allow** (or allow each domain once).
+
+Updates install automatically. Tampermonkey checks once a day; to update right away, use **Dashboard → Utilities → Check for userscript updates**.
 
 ## What it does
 
@@ -36,7 +43,7 @@ The first time Sideport checks a source, your userscript manager asks whether th
 | **Open-source alternatives** | e.g. NewPipe for YouTube |
 | **Modded APKs** | Off by default; see [Safety](#safety) |
 
-- **Availability check:** when the menu opens, every direct source is checked in the background and shows *Available · v1.2.3* or *Not found*.
+- **Availability check:** when the menu opens, every direct source (and Uptodown) is checked in the background and shows *Available · v1.2.3* or *Not found*.
 - **One-click downloads:** the file starts in a new tab. Apps that ship as split APKs (Aptoide) or come in several variants (APKCombo) show a list so you can pick the right file.
 - **Morphe badge:** if the app has [Morphe](https://morphe-patches.software/#apps) patches, a *Morphe · N patches* button appears next to Get APK and links straight to the app's patch page. The patch list stays fresh: Sideport checks Morphe for changes every 30 minutes, which costs a few hundred bytes when nothing changed.
 - **Also:** follows Play's light and dark theme, full keyboard navigation (arrow keys, Home/End, Esc), a filter box, copy package ID, and a banner for apps that aren't available in your country.
@@ -52,6 +59,15 @@ Open the menu → **Settings**, or use your userscript manager's menu:
 - Open downloads in a new tab
 - Turn individual sources on or off
 - Refresh the Morphe patch list now
+
+Your userscript manager's menu (click its icon on a Play page) also has **Open APK sources**, **Copy package ID**, **Copy diagnostics (for bug reports)** and **Support Sideport on Ko-fi**.
+
+## Compatibility and known limitations
+
+- **Browsers:** made for desktop Chrome, Edge and Firefox with Tampermonkey, Violentmonkey or Greasemonkey. Play's mobile website hasn't been tested.
+- **Language:** the menu is in English, but it works on Play pages in any language.
+- **Cloudflare:** APKPure and APKCombo sometimes show a browser check. When a source says *Cloudflare check*, open it once with the ↗ icon.
+- **Paid apps you've bought** still count as paid, so only store links are shown for them.
 
 ## Privacy
 
@@ -83,6 +99,13 @@ Sideport is a link helper, not a mirror. It never hosts, re-uploads or modifies 
 **The button doesn't appear, or a source fails.** Open your userscript manager's menu on that Play page and choose **Copy diagnostics (for bug reports)**, then paste the result into a [new issue](https://github.com/heval99/sideport/issues) together with the app link. If Play keeps redrawing its button row (this happens on some pages when you're signed in), Sideport moves its button next to the app title instead of disappearing.
 
 **Can I add a source?** Yes, [open an issue](https://github.com/heval99/sideport/issues) or a pull request.
+
+## Contributing
+
+- **Suggest a source:** [open an issue](https://github.com/heval99/sideport/issues) with the site and an example app link. Sources that work by package ID and offer original, signed APKs are preferred.
+- **Recommend a Morphe bundle:** if it's listed on [morphe-patches.software](https://morphe-patches.software/#apps), send the GitHub repo. Adding it to the recommended list is a one-line change.
+- **Report a bug:** include the output of **Copy diagnostics** (see the [FAQ](#faq)).
+- **Pull requests** are welcome. Please keep the script dependency-free and test it on a few app pages, both free and paid.
 
 ## Support
 
