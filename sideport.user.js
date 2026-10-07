@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sideport
 // @namespace    https://github.com/heval99/sideport
-// @version      1.0.0
+// @version      1.1.0
 // @description  Get any Google Play app as an APK: direct downloads from 6 sources, APK stores, Morphe patches, open-source alternatives and opt-in mod sites — one button on every app page.
 // @author       heval99
 // @license      PolyForm-Noncommercial-1.0.0
@@ -19,12 +19,14 @@
 // @grant        GM.setValue
 // @grant        GM.registerMenuCommand
 // @grant        GM.setClipboard
+// @grant        GM.info
 // @connect      apkpure.com
 // @connect      winudf.com
 // @connect      apkcombo.com
 // @connect      web-api.aptoide.com
 // @connect      f-droid.org
 // @connect      apt.izzysoft.de
+// @connect      en.uptodown.com
 // @connect      morphe-patches.software
 // @connect      raw.githubusercontent.com
 // ==/UserScript==
@@ -42,12 +44,15 @@
     const RETRY_DELAY_MS = 400;
     const SETTLE_MS = 2500;        // how long to wait for Play's install button before using a fallback anchor
     const GIVE_UP_MS = 20000;
-    const MAX_REMOUNTS = 15;       // stop re-adding the button if Play keeps removing it
+    const MOUNT_STRATEGIES = ['inline', 'row', 'heading', 'banner'];
+    const CHURN_LIMIT = 5;              // removals within CHURN_WINDOW_MS before trying the next mount spot
+    const CHURN_WINDOW_MS = 10000;
+    const THROTTLE_AFTER_REMOUNTS = 30; // after this many removals on one page, remount at most once a second
     const PROBE_CONCURRENCY = 4;
     const MISSING_RESULT_TTL_MS = 10 * 60 * 1000;   // "not found" answers are re-checked after this
     const SETTINGS_KEY = 'sideport-settings-v1';
-    const PATCH_META_KEY = 'sideport-patch-meta-v2';   // { fetchedAt, communityEtag, officialEtag }: rewritten on every check
-    const PATCH_DATA_KEY = 'sideport-patch-data-v2';   // { community, official }: rewritten only when Morphe changed
+    const PATCH_META_KEY = 'sideport-patch-meta-v3';   // { fetchedAt, communityEtag, officialEtag }: rewritten on every check
+    const PATCH_DATA_KEY = 'sideport-patch-data-v3';   // { community, official }: rewritten only when Morphe changed
     // Checking is cheap: Morphe answers "304 Not Modified" (no body) when its list hasn't changed since our ETag.
     const PATCH_INDEX_TTL_MS = 30 * 60 * 1000;
     const PATCH_INDEX_MISSING_RECHECK_MS = 5 * 60 * 1000;   // apps not in the list yet are re-checked sooner
@@ -60,6 +65,9 @@
     const MORPHE_BLUE = '#1E5AA8';
     const MORPHE_TEAL = '#00AFAE';
     const DONATE_URL = 'https://ko-fi.com/heval99';
+    // Morphe community bundles Sideport recommends: shown first in the Patches section, linked to their repo.
+    // Entries are GitHub "owner/repo" (case-insensitive) or "owner/*" for all of an author's bundles.
+    const RECOMMENDED_BUNDLES = ['crimera/piko', 'SysAdminDoc/*', 'heval99/Heval-Morphe-Patches'];
     const AUTHOR_PATCHES_URL = 'https://github.com/heval99/Heval-Morphe-Patches';
     const SVG_NS = 'http://www.w3.org/2000/svg';
     // A dotted version, but not a file size ("60.2 MB") or a minimum Android version ("Android 5.0+").
@@ -120,10 +128,23 @@
             page: ctx => `https://apt.izzysoft.de/fdroid/index/apk/${ctx.encodedPackageId}`,
             hosts: ['izzysoft.de']
         }),
+        izzyRepoSource({
+            id: 'guardian', label: 'Guardian Project', color: '#6a3d9a', repo: 'guardian',
+            hint: 'Official builds of privacy apps (Signal, Orbot\u2026)',
+            hosts: ['guardianproject.info', 'objectstorage.eu-amsterdam-1.oraclecloud.com']
+        }),
+        izzyRepoSource({
+            id: 'fdroid-archive', label: 'F-Droid archive', color: '#5c6bc0', repo: 'archive',
+            hint: 'Older F-Droid builds', hosts: ['f-droid.org'], defaultOn: false
+        }),
 
         // Stores & mirrors: plain links to the site's own page.
         { id: 'apkmirror', group: 'stores', label: 'APKMirror', color: '#ff8b14', hint: 'Search by package ID', url: ctx => `https://www.apkmirror.com/?post_type=app_release&searchtype=apk&s=${ctx.encodedPackageId}` },
-        { id: 'uptodown', group: 'stores', label: 'Uptodown', color: '#4a6cf7', hint: 'Search by package ID', url: ctx => `https://en.uptodown.com/android/search?query=${ctx.encodedPackageId}` },
+        {
+            id: 'uptodown', group: 'stores', label: 'Uptodown', color: '#4a6cf7', hint: 'Original APKs',
+            url: ctx => `https://en.uptodown.com/android/search?query=${ctx.encodedPackageId}`,
+            probe: probeUptodown
+        },
         { id: 'evozi', group: 'stores', label: 'Evozi APK Downloader', color: '#009688', hint: 'Generates a download from Google Play', url: ctx => `https://apps.evozi.com/apk-downloader/?packagename=${ctx.encodedPackageId}` },
         { id: 'apkfab', group: 'stores', label: 'APKFab', color: '#1a73e8', hint: 'Search by package ID', url: ctx => `https://apkfab.com/search?q=${ctx.encodedPackageId}` },
         { id: 'github', group: 'stores', label: 'GitHub', color: '#6e7681', hint: 'Repositories mentioning the package', defaultOn: false, url: ctx => `https://github.com/search?q=${ctx.encodedPackageId}&type=repositories` },
@@ -143,12 +164,7 @@
     // Safer open-source options for specific apps. Only add entries that have been verified.
     const ALTERNATIVES = {
         'com.google.android.youtube': [
-            { id: 'alt-revanced', label: 'ReVanced', color: '#9ed5ff', hint: 'Open-source patcher for the official app', url: 'https://revanced.app/' },
             { id: 'alt-newpipe', label: 'NewPipe', color: '#cd201f', hint: 'Lightweight open-source client', url: 'https://newpipe.net/' }
-        ],
-        'com.google.android.apps.youtube.music': [
-            { id: 'alt-revanced', label: 'ReVanced', color: '#9ed5ff', hint: 'Open-source patcher for the official app', url: 'https://revanced.app/' },
-            { id: 'alt-revanced-extended', label: 'ReVanced Extended (anddea)', color: '#7e57c2', hint: 'Maintained community patch set', url: 'https://github.com/anddea/revanced-patches' }
         ]
     };
 
@@ -187,6 +203,9 @@
         routeStart: 0,
         sessionId: 0,
         remounts: 0,
+        removals: [],  // timestamps of recent removals by Play, for churn detection
+        strategy: 0,   // index into MOUNT_STRATEGIES
+        lastMountAt: 0,
         dismissedRoute: '',
         mount: null,   // { root, anchor, ctx, widget }
         menu: null,    // persistent menu for the current route
@@ -197,6 +216,7 @@
     const probeCache = new Map();
     const probeQueue = [];
     const inflightRequests = new Set();   // page-bound requests that teardown() cancels
+    const recentFailures = [];            // last few source errors, for "Copy diagnostics"
     let activeProbes = 0;
     let settings = defaultSettings();
     let toastTimer = null;
@@ -230,9 +250,9 @@
         }, delay);
     }
 
-    function scheduleRetry() {
+    function scheduleRetry(delay = RETRY_DELAY_MS) {
         window.clearTimeout(state.retryTimer);
-        state.retryTimer = window.setTimeout(() => scheduleRender(), RETRY_DELAY_MS);
+        state.retryTimer = window.setTimeout(() => scheduleRender(), delay);
     }
 
     function renderForCurrentPage() {
@@ -243,6 +263,8 @@
             state.routeKey = key;
             state.routeStart = Date.now();
             state.remounts = 0;
+            state.removals = [];
+            state.strategy = 0;
         }
         if (!route || state.dismissedRoute === key) return;
 
@@ -250,11 +272,27 @@
             if (state.mount.root.isConnected) return;
             closeMenu(false);
             state.mount = null;
-            state.remounts += 1;
+            noteRemoval();
         }
-        // Stop fighting a layout that keeps removing the button; the cap resets on the next route change.
-        if (state.remounts > MAX_REMOUNTS) return;
+        // Under heavy churn, remount at most once a second instead of on every DOM mutation.
+        const sinceLastMount = Date.now() - state.lastMountAt;
+        if (state.remounts > THROTTLE_AFTER_REMOUNTS && sinceLastMount < 1000) {
+            scheduleRetry(1000 - sinceLastMount);
+            return;
+        }
         tryMount(route);
+    }
+
+    // Play re-renders some pages' action rows (e.g. signed-in pages of apps installed on the user's devices),
+    // which removes our button. Repeated removals move it to a calmer spot instead of giving up.
+    function noteRemoval() {
+        const now = Date.now();
+        state.remounts += 1;
+        state.removals = state.removals.filter(time => now - time < CHURN_WINDOW_MS).concat(now);
+        if (state.removals.length > CHURN_LIMIT && state.strategy < MOUNT_STRATEGIES.length - 1) {
+            state.strategy += 1;
+            state.removals = [];
+        }
     }
 
     function teardown() {
@@ -287,35 +325,42 @@
         // App pages know the package from the URL; search pages take it from the top result's widget.
         const widget = findActionWidget(route.packageId);
         const packageId = route.packageId || packageFromWidget(widget);
+        const strategy = MOUNT_STRATEGIES[state.strategy];
         const elapsed = Date.now() - state.routeStart;
+        state.lastMountAt = Date.now();
 
-        if (widget && packageId) {
-            mountInline(widget, createContext(packageId, widget));
+        if (widget && packageId && (strategy === 'inline' || strategy === 'row')) {
+            mountNearWidget(widget, createContext(packageId, widget), strategy);
             return;
         }
-        if (elapsed < SETTLE_MS || (!packageId && elapsed < GIVE_UP_MS)) {
+        // Without a widget, give Play time to render it before falling back (not needed once escalated).
+        const escalated = strategy === 'heading' || strategy === 'banner';
+        if (!escalated && (elapsed < SETTLE_MS || (!packageId && elapsed < GIVE_UP_MS))) {
             scheduleRetry();
             return;
         }
-        if (!packageId || !route.isDetails) return;
+        if (!packageId || (!route.isDetails && !widget)) return;
 
-        const heading = document.querySelector('main h1') || document.querySelector('h1');
-        if (heading) {
-            mountAfterHeading(heading, createContext(packageId, null));
+        const ctx = createContext(packageId, widget);
+        const heading = route.isDetails && (document.querySelector('main h1') || document.querySelector('h1'));
+        if (heading && strategy !== 'banner') {
+            mountAfterHeading(heading, ctx);
         } else {
-            mountBanner(createContext(packageId, null));
+            mountBanner(ctx, escalated && widget ? `Sideport for ${ctx.appName}` : null);
         }
     }
 
-    // Sits directly after Play's own install/buy widget, in the same row.
-    function mountInline(widget, ctx) {
-        if (!widget.parentElement) {
+    // 'inline' sits directly after Play's install/buy widget, in the same row. 'row' sits after that whole
+    // row, outside the part of the page Play keeps re-rendering.
+    function mountNearWidget(widget, ctx, strategy) {
+        const target = strategy === 'row' ? widget.parentElement : widget;
+        if (!target?.parentElement) {
             scheduleRetry();
             return;
         }
         const anchor = createMainButton();
-        const root = el('div', { className: 'pas-root pas-mount pas-inline' }, anchor);
-        widget.after(root);
+        const root = el('div', { className: `pas-root pas-mount ${strategy === 'row' ? 'pas-after-row' : 'pas-inline'}` }, anchor);
+        target.after(root);
         setMount(root, anchor, ctx, widget);
     }
 
@@ -326,7 +371,7 @@
         setMount(root, anchor, ctx, null);
     }
 
-    function mountBanner(ctx) {
+    function mountBanner(ctx, message = null) {
         const anchor = createMainButton();
         const dismiss = el('button', {
             type: 'button', className: 'pas-icon-btn', 'aria-label': 'Dismiss', title: 'Dismiss',
@@ -337,7 +382,7 @@
             }
         }, icon('close'));
         const root = el('div', { className: 'pas-root pas-mount pas-banner', role: 'region', 'aria-label': 'APK sources' },
-            el('p', { className: 'pas-banner-text', text: 'This app isn’t available on Google Play here. You can still look for the APK.' }),
+            el('p', { className: 'pas-banner-text', text: message || 'This app isn’t available on Google Play here. You can still look for the APK.' }),
             anchor,
             dismiss);
         document.body.append(root);
@@ -366,6 +411,7 @@
         GM.registerMenuCommand('Open APK sources', requireApp(() => openMenu('sources', true)));
         GM.registerMenuCommand('APK source settings', requireApp(() => openMenu('settings', true)));
         GM.registerMenuCommand('Copy package ID', copyPackageId);
+        GM.registerMenuCommand('Copy diagnostics (for bug reports)', copyDiagnostics);
         GM.registerMenuCommand('♥ Support Sideport on Ko-fi', () => window.open(DONATE_URL, '_blank', 'noopener'));
     }
 
@@ -425,11 +471,22 @@
     // App name and price can render after the button is mounted, so re-read them whenever the menu opens.
     function refreshContext(ctx, widget) {
         ctx.appName = readAppName() || ctx.appName || ctx.packageId;
-        ctx.searchName = ctx.appName.split(/\s[-–—|:]\s|:\s/)[0].trim() || ctx.appName;
+        ctx.searchName = modSearchName(ctx.appName, ctx.packageId);
         ctx.isFree = !isPaidApp(widget);
     }
 
-    const PACKAGE_ID_PATTERN = /^[A-Za-z]\w*(?:\.\w+)+$/;
+    // Mod sites are English and search by name. Play shows translated names on other languages' pages, so a
+    // non-Latin name falls back to a readable part of the package id (com.spotify.music -> "spotify").
+    function modSearchName(appName, packageId) {
+        const shortName = appName.split(/\s[-–—|:]\s|:\s/)[0].trim() || appName;
+        if (/^[\p{Script=Latin}\p{N}\p{P}\p{Zs}+&']+$/u.test(shortName)) return shortName;
+        // The last meaningful segment names the app (com.google.android.apps.maps -> "maps").
+        const generic = new Set(['android', 'app', 'apps', 'mobile', 'client', 'free', 'pro', 'lite', 'main', 'messenger', 'music', 'results']);
+        const parts = packageId.split('.').slice(1).filter(part => !generic.has(part.toLowerCase()));
+        return parts[parts.length - 1] || shortName;
+    }
+
+    const PACKAGE_ID_PATTERN =/^[A-Za-z]\w*(?:\.\w+)+$/;
 
     function toPackageId(value) {
         const candidate = typeof value === 'string' ? value.trim() : '';
@@ -445,7 +502,14 @@
     function findActionWidget(packageId) {
         const widgets = document.querySelectorAll(WIDGET_SELECTOR);
         if (!packageId) return widgets[0] || null;
-        return [...widgets].find(widget => packageFromWidget(widget) === packageId) || null;
+        const exact = [...widgets].find(widget => packageFromWidget(widget) === packageId);
+        if (exact) return exact;
+        // Safety net in case Play changes the "%.@." prefix: any data-item-id carrying the quoted package
+        // that wraps a button.
+        const quoted = `"${packageId}"`;
+        return [...document.querySelectorAll('[data-item-id]')].find(element =>
+            element.getAttribute('data-item-id').includes(quoted) && element.querySelector('button, [role="button"]')
+            && !element.closest('.pas-root')) || null;
     }
 
     function packageFromWidget(widget) {
@@ -677,7 +741,7 @@
         const noMatch = el('p', { className: 'pas-empty pas-no-match', hidden: true, text: 'No sources match your filter.' });
         menu.body.replaceChildren(...sections, empty || '', noMatch);
 
-        const hasProbes = ctx.isFree && enabledSources('direct').some(source => source.probe);
+        const hasProbes = [...(ctx.isFree ? enabledSources('direct') : []), ...enabledSources('stores')].some(source => source.probe);
         menu.footer.replaceChildren(
             el('div', { className: 'pas-footer-group' },
                 el('button', { type: 'button', className: 'pas-text-btn', onClick: () => renderSettingsView(true) }, icon('settings'), 'Settings'),
@@ -695,22 +759,44 @@
             rows.length ? el('ul', { className: 'pas-list', role: 'list' }, rows) : null);
     }
 
+    // Link rows open the source's site. Sources with a probe (e.g. Uptodown) also show availability and, once
+    // found, link straight to the app's page instead of a search.
     function buildLinkRow(source, ctx) {
-        const url = safeHttpsUrl(typeof source.url === 'function' ? source.url(ctx) : source.url);
+        const probe = source.probe ? getCachedProbe(ctx, source) : null;
+        const url = safeHttpsUrl(probe?.state === 'ok' && probe.pageUrl)
+            || safeHttpsUrl(typeof source.url === 'function' ? source.url(ctx) : source.url);
         if (!url) return null;
         const hint = typeof source.hint === 'function' ? source.hint(ctx) : source.hint;
         const badge = source.badge || (source.group === 'mods' ? 'Mod' : 'Link');
+        let sub = hint || safeHost(url);
+        let tone = '';
+        if (probe?.state === 'ok') {
+            sub = probe.version ? `Available \u00b7 v${probe.version}` : 'Available \u00b7 opens the app page';
+            tone = 'ok';
+        } else if (probe?.state === 'missing') {
+            sub = 'Not found on this source';
+        } else if (probe?.state === 'loading') {
+            sub = 'Checking\u2026';
+        } else if (probe?.state === 'unknown') {
+            sub = 'Couldn\u2019t check \u00b7 opens search';
+        }
         const link = el('a', {
             className: 'pas-row', href: url, target: '_blank', rel: 'noopener noreferrer', tabindex: '-1',
+            'aria-busy': probe?.state === 'loading' ? 'true' : null,
             onClick: () => closeMenu(false)
         },
         dot(source.color),
         el('span', { className: 'pas-row-text' },
             el('span', { className: 'pas-row-label', text: source.label }),
-            el('span', { className: 'pas-row-sub', text: hint || safeHost(url) })),
+            el('span', { className: 'pas-row-sub', text: sub, dataset: tone ? { tone } : {} })),
         el('span', { className: `pas-badge${source.badgeClass ? ` ${source.badgeClass}` : ''}`, text: badge }),
         icon('open'));
-        return el('li', { className: 'pas-item', dataset: { id: source.id, filter: `${source.label} ${hint || ''} ${safeHost(url)}`.toLowerCase() } }, link);
+        const item = el('li', {
+            className: `pas-item${probe?.state === 'missing' ? ' is-missing' : ''}`,
+            dataset: { id: source.id, filter: `${source.label} ${hint || ''} ${safeHost(url)}`.toLowerCase() }
+        }, link);
+        if (source.probe && state.menu) state.menu.rows.set(source.id, item);
+        return item;
     }
 
     function buildDirectRow(source, ctx) {
@@ -781,7 +867,9 @@
             ? (active.classList.contains('pas-row-side') ? '.pas-row-side' : active.classList.contains('pas-row') ? '.pas-row' : null)
             : null;
         const wasCurrent = item.querySelector('.pas-row')?.tabIndex === 0;
-        const fresh = buildDirectRow(SOURCE_BY_ID.get(sourceId), ctx);
+        const source = SOURCE_BY_ID.get(sourceId);
+        const fresh = source.group === 'direct' ? buildDirectRow(source, ctx) : buildLinkRow(source, ctx);
+        if (!fresh) return;
         fresh.hidden = item.hidden;
         item.replaceWith(fresh);
         if (wasCurrent) fresh.querySelector('.pas-row').tabIndex = 0;
@@ -1064,7 +1152,10 @@
                 if (ctx.sessionId === state.sessionId) setAction(source.id, { text: 'Interrupted — click to retry', tone: 'warn' });
                 return;
             }
-            if (!(error instanceof NotListed)) console.warn(`${LOG_PREFIX} ${source.label} failed`, error);
+            if (!(error instanceof NotListed)) {
+                console.warn(`${LOG_PREFIX} ${source.label} failed`, error);
+                rememberFailure(source.label, error);
+            }
             setAction(source.id, {
                 text: error instanceof NotListed ? 'Not found here — try the site ↗' : `${failureText(error)} — retry or open the site ↗`,
                 tone: 'error'
@@ -1149,6 +1240,7 @@
                 error => {
                     if (error instanceof PageChanged) throw error;
                     if (error instanceof NotListed) return { state: 'missing' };
+                    rememberFailure(`${source.label} (check)`, error);
                     return { state: 'unknown', message: failureText(error) };
                 })
             .then(result => {
@@ -1165,9 +1257,9 @@
         return fresh.promise;
     }
 
+    // Store lookups are harmless for paid apps too; direct-download checks only run for free apps.
     function runProbes(ctx) {
-        if (!ctx.isFree) return;
-        enabledSources('direct')
+        [...(ctx.isFree ? enabledSources('direct') : []), ...enabledSources('stores')]
             .filter(source => source.probe)
             .forEach(source => getProbe(ctx, source).catch(() => {}));
     }
@@ -1267,6 +1359,38 @@
         (listing.aab?.splits || []).forEach((split, position) => add(split?.path, split?.name ? `Split · ${split.name}` : `Split ${position + 1}`));
         Object.entries(listing.obb || {}).forEach(([kind, entry]) => add(entry?.path, `OBB · ${kind}`));
         return parts;
+    }
+
+    // Uptodown's search, queried with a package id, returns exactly that app, or an "empty-search" list
+    // followed by unrelated suggestions, so the empty marker must be checked first.
+    async function probeUptodown(ctx) {
+        const page = await fetchText(`https://en.uptodown.com/android/search?query=${ctx.encodedPackageId}`, ctx);
+        if (page.text.includes('data-list-name="empty-search"')) throw new NotListed();
+        const appPage = /https:\/\/[a-z0-9-]+\.en\.uptodown\.com\/android/.exec(page.text)?.[0];
+        if (!appPage) throw new NotListed();
+        return { version: null, pageUrl: `${appPage}/download` };
+    }
+
+    // Other F-Droid-format repos, read through IzzyOnDroid's multi-repo browser. The page lists direct APK
+    // links (newest first) and a "Version:" row; it answers 404 when the repo doesn't carry the app.
+    function izzyRepoSource({ id, label, color, repo, hint, hosts, defaultOn }) {
+        const page = ctx => `https://apt.izzysoft.de/fdroid/index/apk/${ctx.encodedPackageId}?repo=${repo}`;
+        const probe = async ctx => {
+            const result = await fetchText(page(ctx), ctx);
+            const doc = parseMarkup(result.text);
+            const apk = [...doc.querySelectorAll('a[href]')]
+                .map(anchor => tryParseUrl(anchor.getAttribute('href'), result.finalUrl))
+                .find(url => url?.protocol === 'https:' && /\.apk$/i.test(url.pathname));
+            if (!apk) throw new NotListed();
+            // The row is labelled "Version:" or "Last Version:" depending on the page.
+            const versionCell = [...doc.querySelectorAll('td')].find(cell => /^(?:Last\s*)?Version:$/i.test(cleanText(cell.textContent)));
+            const version = cleanText(versionCell?.nextElementSibling?.textContent) || null;
+            return { version, data: { files: [{ url: apk.href, label: `APK${version ? ` \u00b7 v${version}` : ''}` }] } };
+        };
+        return {
+            id, group: 'direct', label, color, hint, hosts, page, probe, defaultOn,
+            resolve: async (ctx, data) => ({ files: (data || (await probe(ctx)).data).files })
+        };
     }
 
     function fdroidRepoSource({ id, label, color, apiBase, repoBase, page, hosts }) {
@@ -1476,6 +1600,7 @@
                     apps[packageName].bundles.push({
                         bundle: String(bundle.name || bundle.repo || 'Patch bundle').slice(0, 60),
                         author: String(bundle.author || '').slice(0, 40),
+                        repo: /^[\w.-]+\/[\w.-]+$/.test(bundle.repo || '') ? bundle.repo : null,
                         patches: info.count,
                         versions: latestVersions(info.versions)
                     });
@@ -1573,11 +1698,25 @@
         if (app.official) {
             rows.push({ id: 'morphe-official', label: 'Morphe (official)', color: MORPHE_BLUE, badge: 'Patch', badgeClass: 'pas-badge-morphe', url: MORPHE_OFFICIAL_PAGE, hint: describe(app.official.patches, app.official.versions) });
         }
-        app.community.forEach((bundle, index) => rows.push({
-            id: `morphe-${index}`, label: bundle.bundle, color: MORPHE_TEAL, badge: 'Patch', badgeClass: 'pas-badge-morphe', url: appUrl,
+        const bundles = app.community.map(bundle => ({ ...bundle, recommended: isRecommendedBundle(bundle.repo) }));
+        // Stable sort: recommended first, otherwise keep the patch-count order from the index.
+        bundles.sort((a, b) => b.recommended - a.recommended);
+        bundles.forEach((bundle, index) => rows.push({
+            id: `morphe-${index}`, label: bundle.bundle, color: MORPHE_TEAL,
+            badge: bundle.recommended ? 'Recommended' : 'Patch', badgeClass: 'pas-badge-morphe',
+            url: bundle.recommended && bundle.repo ? `https://github.com/${bundle.repo}` : appUrl,
             hint: `${bundle.author ? `by ${bundle.author} · ` : ''}${describe(bundle.patches, bundle.versions)}`
         }));
         return rows;
+    }
+
+    function isRecommendedBundle(repo) {
+        if (!repo) return false;
+        const [owner, name] = repo.toLowerCase().split('/');
+        return RECOMMENDED_BUNDLES.some(entry => {
+            const [wantOwner, wantName] = entry.toLowerCase().split('/');
+            return owner === wantOwner && (wantName === '*' || name === wantName);
+        });
     }
 
     async function attachPatchChip(root, anchor, ctx) {
@@ -1795,7 +1934,7 @@
         const pageTheme = detectDarkTheme() ? 'dark' : 'light';
         nodes.forEach(node => {
             if (!node) return;
-            const inPage = node.classList.contains('pas-inline') || node.classList.contains('pas-after-heading');
+            const inPage = ['pas-inline', 'pas-after-row', 'pas-after-heading'].some(name => node.classList.contains(name));
             node.dataset.theme = inPage ? (detectContextDark(node.parentElement) ? 'dark' : 'light') : pageTheme;
         });
     }
@@ -1818,6 +1957,14 @@
         toastTimer = window.setTimeout(() => toast.classList.remove('is-visible'), 2600);
     }
 
+    async function copyText(text) {
+        if (typeof GM?.setClipboard === 'function') {
+            await GM.setClipboard(text, 'text');
+        } else {
+            await navigator.clipboard.writeText(text);
+        }
+    }
+
     async function copyPackageId() {
         const packageId = state.mount?.ctx.packageId;
         if (!packageId) {
@@ -1825,14 +1972,51 @@
             return;
         }
         try {
-            if (typeof GM?.setClipboard === 'function') {
-                await GM.setClipboard(packageId, 'text');
-            } else {
-                await navigator.clipboard.writeText(packageId);
-            }
+            await copyText(packageId);
             showToast(`Copied ${packageId}`);
         } catch {
             showToast('Could not copy the package ID');
+        }
+    }
+
+    function rememberFailure(sourceLabel, error) {
+        recentFailures.push({ source: sourceLabel, error: failureText(error), at: new Date().toISOString() });
+        if (recentFailures.length > 5) recentFailures.shift();
+    }
+
+    // Everything needed to debug "the button doesn't show up" or "a source fails" from a user report.
+    function collectDiagnostics() {
+        const info = typeof GM !== 'undefined' ? GM.info : null;
+        const route = getRoute();
+        const mount = state.mount;
+        return {
+            sideport: info?.script?.version || 'unknown',
+            manager: info ? `${info.scriptHandler || 'unknown'} ${info.version || ''}`.trim() : 'unknown',
+            url: location.href,
+            pageLanguage: document.documentElement.lang || null,
+            signedIn: Boolean(document.querySelector('[aria-label*="Google Account" i], [aria-label*="account menu" i] img, a[href*="SignOutOptions"]')),
+            route: route?.key || null,
+            widgets: [...document.querySelectorAll('[data-item-id]')]
+                .map(element => element.getAttribute('data-item-id'))
+                .filter(value => value.includes('"'))
+                .slice(0, 5),
+            mounted: Boolean(mount?.root.isConnected),
+            mountStrategy: MOUNT_STRATEGIES[state.strategy],
+            removalsByPlay: state.remounts,
+            package: mount?.ctx.packageId || null,
+            paid: mount ? !mount.ctx.isFree : null,
+            theme: mount?.root.dataset.theme || null,
+            morpheList: patchIndex ? { apps: patchAppCount(patchIndex), checked: new Date(patchIndex.fetchedAt).toISOString() } : null,
+            recentFailures
+        };
+    }
+
+    async function copyDiagnostics() {
+        try {
+            await copyText(JSON.stringify(collectDiagnostics(), null, 2));
+            showToast('Diagnostics copied — paste them into your GitHub issue');
+        } catch {
+            showToast('Could not copy diagnostics');
         }
     }
 
@@ -1955,6 +2139,7 @@
 
             .pas-inline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-inline-start: 8px; vertical-align: middle; }
             .pas-after-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+            .pas-after-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
             /* Morphe brand gradient with white text: readable on Play's light pages and dark app banners alike. */
             .pas-chip {
                 position: relative; display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px 0 10px;

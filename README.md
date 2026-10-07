@@ -30,10 +30,10 @@ The first time Sideport checks a source, your userscript manager asks whether th
 
 | Section | Sources |
 |---|---|
-| **Direct download** | APKPure, APKPure XAPK, APKCombo, Aptoide, F-Droid, IzzyOnDroid |
-| **Stores & mirrors** | APKMirror, Uptodown, Evozi, APKFab, GitHub (off by default) |
-| **Morphe patches** | Community patch bundles and official Morphe patches for the app |
-| **Open-source alternatives** | e.g. ReVanced and NewPipe for YouTube |
+| **Direct download** | APKPure, APKPure XAPK, APKCombo, Aptoide, F-Droid, IzzyOnDroid, Guardian Project, F-Droid archive (off by default) |
+| **Stores & mirrors** | APKMirror, Uptodown (checked, links the exact app page), Evozi, APKFab, GitHub (off by default) |
+| **Morphe patches** | Official Morphe patches and every community bundle for the app. Recommended bundles come first: [piko](https://github.com/crimera/piko) (X, Instagram), the [Hush](https://github.com/SysAdminDoc) bundles by SysAdminDoc (Facebook, Messenger, Instagram, TikTok, Threads and more) and [Heval](https://github.com/heval99/Heval-Morphe-Patches) |
+| **Open-source alternatives** | e.g. NewPipe for YouTube |
 | **Modded APKs** | Off by default; see [Safety](#safety) |
 
 - **Availability check:** when the menu opens, every direct source is checked in the background and shows *Available · v1.2.3* or *Not found*.
@@ -69,7 +69,7 @@ Open the menu → **Settings**, or use your userscript manager's menu:
 
 **A source says "Couldn't check · Cloudflare check".** The site is asking for a browser check. Click the ↗ icon to open the site once; afterwards background checks usually work again.
 
-**The button doesn't appear.** Google sometimes changes Play's layout. Please [open an issue](https://github.com/heval99/sideport/issues) with the app link.
+**The button doesn't appear, or a source fails.** Open your userscript manager's menu on that Play page and choose **Copy diagnostics (for bug reports)**, then paste the result into a [new issue](https://github.com/heval99/sideport/issues) together with the app link. If Play keeps redrawing its button row (this happens on some pages when you're signed in), Sideport moves its button next to the app title instead of disappearing.
 
 **Can I add a source?** Yes, [open an issue](https://github.com/heval99/sideport/issues) or a pull request.
 
