@@ -65,6 +65,17 @@ Open the menu → **Settings**, or use your userscript manager's menu:
 - **Modded APKs** are unverified, repackaged files, and several mod sites are known for adware or malware. That's why the section is **off by default** and carries a warning. Sideport only links to their search pages; it never downloads from them.
 - Sideport only opens `https://` links, and for direct downloads it checks that the file comes from the source's own domains.
 
+## For site owners
+
+Sideport is a link helper, not a mirror. It never hosts, re-uploads or modifies files. Here is how it uses each source:
+
+- **Only on demand.** A source is contacted only when someone opens the Sideport menu on a Google Play app page, and only for that one app. Nothing is crawled or prefetched in bulk.
+- **From the user's own browser.** Requests come straight from the visitor's browser (no Sideport server in between), so your site sees normal visits and keeps its own ads, Cloudflare checks and download pages.
+- **Light lookups.** To show *Available* or *Not found*, Sideport makes one lookup per app: your public search or API endpoint, or a `HEAD` request. Results are cached in the user's browser.
+- **Your links stay yours.** Downloads open your own URLs; for store links, users land on your site.
+
+**Want your site removed, or changed** (for example link-only, no background checks)? [Open a removal request](https://github.com/heval99/sideport/issues/new?template=source-removal.yml&labels=source-removal) and it will be handled promptly. Sideport respects every request, no questions asked. The change ships in the next update, which installed copies receive automatically.
+
 ## FAQ
 
 **A source says "Couldn't check · Cloudflare check".** The site is asking for a browser check. Click the ↗ icon to open the site once; afterwards background checks usually work again.

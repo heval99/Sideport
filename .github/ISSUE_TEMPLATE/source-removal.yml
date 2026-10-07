@@ -1,0 +1,40 @@
+name: Remove or change my site (site owners)
+description: Ask for your website to be removed from Sideport, or for how Sideport uses it to be changed.
+title: "Source removal: "
+labels: ["source-removal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for getting in touch. Sideport only links to sources and makes on-demand lookups from users' own browsers, but if you'd rather not be included, or want it to use your site differently, just say so here. Every request is respected.
+  - type: input
+    id: site
+    attributes:
+      label: Website
+      description: The domain(s) concerned.
+      placeholder: example.com
+    validations:
+      required: true
+  - type: dropdown
+    id: request
+    attributes:
+      label: What would you like?
+      options:
+        - Remove my site from Sideport completely
+        - Keep a plain link, but stop background availability checks
+        - Change how Sideport links to my site (describe below)
+        - Something else (describe below)
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Anything else we should know, for example a preferred link format or a contact for follow-up.
+  - type: checkboxes
+    id: owner
+    attributes:
+      label: Confirmation
+      options:
+        - label: I own or represent this website.
+          required: true
