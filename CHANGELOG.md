@@ -1,35 +1,21 @@
 # Changelog
 
-## 1.1.2 — 2026-10-07
-
-- Recommend [Gboard patches](https://github.com/jasonwu1994/Gboard-patches) by jasonwu1994 for Gboard (Google Keyboard).
-
-## 1.1.1 — 2026-10-07
-
-- **Fixed:** no button on signed-in pages of apps already on your devices ("Install on more devices", e.g. Gboard and YouTube). Play keeps a hidden Install widget there; Sideport now prefers the visible one, and if its button would end up hidden it moves it after the button row or next to the app title.
-- **Copy diagnostics** now reports which Play widgets are hidden.
-
-## 1.1.0 — 2026-10-07
-
-- **Fixed:** the button could disappear on pages where Play keeps redrawing its button row (seen on YouTube when signed in). Sideport now moves the button next to the app title instead of giving up.
-- **New sources:**
-  - Uptodown is now checked in the background and links straight to the app's page.
-  - The Guardian Project repo is a new direct source (Signal, Orbot and more).
-  - The F-Droid archive is a new direct source, off by default.
-- **Recommended Morphe bundles** are listed first, with a link to their repos: piko (X, Instagram), the Hush bundles by SysAdminDoc (Facebook, Messenger, Instagram, TikTok, Threads, Telegram, Pinterest) and Heval.
-- **New "Copy diagnostics" command** in the userscript manager menu, for bug reports.
-- **Better mod-site searches on non-English Play pages:** if the app name is shown in a non-Latin script, the search uses a readable part of the package ID instead.
-- **ReVanced links removed** from the alternatives.
+Small fixes and new recommendations bump the last number (1.0.1, 1.0.2…), and big features bump the middle one (1.1.0). Your userscript manager only offers an update when the version goes up.
 
 ## 1.0.0 — 2026-10-07
 
 First public release.
 
-- **Get APK** button next to Install on every Google Play app page, plus top results on search pages.
-- Direct downloads from APKPure (APK and XAPK), APKCombo, Aptoide (including split APKs and OBB files), F-Droid and IzzyOnDroid, with background availability and version checks.
-- Store links: APKMirror, Uptodown, Evozi, APKFab and GitHub.
-- **Morphe patches:** a badge and a menu section when community or official Morphe patches exist for the app. Re-checked every 30 minutes and applied to the open page without a reload.
-- Open-source alternatives for selected apps (ReVanced, NewPipe, ReVanced Extended).
-- Opt-in modded-APK search links with a malware warning (off by default).
-- Material 3 menu that follows Play's light and dark theme, with keyboard navigation, a filter box, copy package ID and a banner for region-locked apps.
+- **Get APK** button next to Install on every Google Play app page, plus top results on search pages. It stays visible on signed-in pages ("Install on more devices") and when Play redraws its button row.
+- **Direct downloads** from APKPure (APK and XAPK), APKCombo, Aptoide (including split APKs and OBB files), F-Droid, IzzyOnDroid, the Guardian Project repo and the F-Droid archive (off by default), with background availability and version checks.
+- **Store links:** APKMirror, Uptodown (checked, links the exact app page), Evozi, APKFab and GitHub.
+- **Morphe patches:** a badge and a menu section when community or official Morphe patches exist for the app. Re-checked every 30 minutes and applied to the open page without a reload. Recommended bundles are listed first and link to their repos:
+  - piko (X, Instagram);
+  - the Hush bundles by SysAdminDoc (Facebook, Messenger, Instagram, TikTok, Threads, Telegram, Pinterest);
+  - Gboard patches by jasonwu1994;
+  - Heval.
+- **Open-source alternatives** for selected apps (e.g. NewPipe for YouTube).
+- **Opt-in modded-APK search links** with a malware warning (off by default). Searches use a readable name even on non-English Play pages.
+- **Material 3 menu** that follows Play's light and dark theme, with keyboard navigation, a filter box, copy package ID and a banner for region-locked apps.
+- **Copy diagnostics** command in the userscript manager menu, for bug reports.
 - Settings for every section and source.
