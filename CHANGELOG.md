@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.2 — 2026-10-07
+
+- Recommend [Gboard patches](https://github.com/jasonwu1994/Gboard-patches) by jasonwu1994 for Gboard (Google Keyboard).
+
 ## 1.1.1 — 2026-10-07
 
 - **Fixed:** no button on signed-in pages of apps already on your devices ("Install on more devices", e.g. Gboard and YouTube). Play keeps a hidden Install widget there; Sideport now prefers the visible one, and if its button would end up hidden it moves it after the button row or next to the app title.

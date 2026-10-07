@@ -32,7 +32,7 @@ The first time Sideport checks a source, your userscript manager asks whether th
 |---|---|
 | **Direct download** | APKPure, APKPure XAPK, APKCombo, Aptoide, F-Droid, IzzyOnDroid, Guardian Project, F-Droid archive (off by default) |
 | **Stores & mirrors** | APKMirror, Uptodown (checked, links the exact app page), Evozi, APKFab, GitHub (off by default) |
-| **Morphe patches** | Official Morphe patches and every community bundle for the app. Recommended bundles come first: [piko](https://github.com/crimera/piko) (X, Instagram), the [Hush](https://github.com/SysAdminDoc) bundles by SysAdminDoc (Facebook, Messenger, Instagram, TikTok, Threads and more) and [Heval](https://github.com/heval99/Heval-Morphe-Patches) |
+| **Morphe patches** | Official Morphe patches and every community bundle for the app. Recommended bundles come first: [piko](https://github.com/crimera/piko) (X, Instagram), the [Hush](https://github.com/SysAdminDoc) bundles by SysAdminDoc (Facebook, Messenger, Instagram, TikTok, Threads and more), [Gboard patches](https://github.com/jasonwu1994/Gboard-patches) by jasonwu1994 and [Heval](https://github.com/heval99/Heval-Morphe-Patches) |
 | **Open-source alternatives** | e.g. NewPipe for YouTube |
 | **Modded APKs** | Off by default; see [Safety](#safety) |
 

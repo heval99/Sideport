@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sideport
 // @namespace    https://github.com/heval99/sideport
-// @version      1.1.1
+// @version      1.1.2
 // @description  Get any Google Play app as an APK: direct downloads from 6 sources, APK stores, Morphe patches, open-source alternatives and opt-in mod sites — one button on every app page.
 // @author       heval99
 // @license      PolyForm-Noncommercial-1.0.0
@@ -67,7 +67,7 @@
     const DONATE_URL = 'https://ko-fi.com/heval99';
     // Morphe community bundles Sideport recommends: shown first in the Patches section, linked to their repo.
     // Entries are GitHub "owner/repo" (case-insensitive) or "owner/*" for all of an author's bundles.
-    const RECOMMENDED_BUNDLES = ['crimera/piko', 'SysAdminDoc/*', 'heval99/Heval-Morphe-Patches'];
+    const RECOMMENDED_BUNDLES = ['crimera/piko', 'SysAdminDoc/*', 'jasonwu1994/Gboard-patches', 'heval99/Heval-Morphe-Patches'];
     const AUTHOR_PATCHES_URL = 'https://github.com/heval99/Heval-Morphe-Patches';
     const SVG_NS = 'http://www.w3.org/2000/svg';
     // A dotted version, but not a file size ("60.2 MB") or a minimum Android version ("Android 5.0+").
