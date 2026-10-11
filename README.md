@@ -162,7 +162,7 @@ Yes, [open an issue](https://github.com/heval99/sideport/issues) or a pull reque
 - 🧩 **Recommend a Morphe bundle:** if it's listed on [morphe-patches.software](https://morphe-patches.software/#apps), send the GitHub repo. Adding it to the recommended list is a one-line change.
 - 🐞 **Report a bug:** include the output of **Copy diagnostics** (see the [FAQ](#-faq)).
 - 🔧 **Pull requests** are welcome. Please keep the script dependency-free and test it on a few app pages, both free and paid.
-- 🧪 **Automated tests:** `npm install` then `npm test` (Node 20.10+). They run the script in a simulated Play page with recorded source responses, so they need no browser or network. Every change to `sideport.user.js` also needs a higher `@version`; CI checks that.
+- 🧪 **Automated tests:** `npm install` then `npm test` (Node 22+). They run the script in a simulated Play page with recorded source responses, so they need no browser or network. Every change to `sideport.user.js` also needs a higher `@version`; CI checks that.
 
 ## ☕ Support
 
