@@ -18,6 +18,10 @@ Fixes from a code review and testing pass. (The version jumps from 1.0.0 to 1.2.
 - Two installed copies of Sideport no longer add two buttons; the script starts even if the userscript manager provides no `GM` object.
 - "Open APK sources" from the userscript manager's menu works when the button is scrolled out of view, and brings the button back after you dismissed the banner.
 - **Accessibility and layout:** better contrast on the Morphe badge and on *Not found* rows, a screen-reader summary when the checks finish, the button follows Play's own theme switch, and right-to-left pages are laid out correctly.
+- **Looks right on the real Play page:** the Get APK button and the menu's footer buttons keep their intended weight and colour (a style rule was overriding them), and the button matches the height of Play's own.
+- **Right app name:** after moving between apps inside Play, the menu (and mod-site searches) no longer use the previous app's name, and on search pages they use the top result's name instead of your search words.
+- **Clearer menu:** status lines wrap instead of being cut off (so "Cloudflare check — open the site" is readable), the filter ignores punctuation ("fdroid" finds F-Droid) and tells screen readers how many sources match, *Not found* rows no longer show a Download badge, Reset asks once more before wiping your settings, and the banner says when Google Play doesn't list an app at all.
+- **Hardening:** responses from source sites are parsed in time proportional to their size (crafted ones could freeze the tab), oversized answers are refused, shared cloud storage is trusted only when the source itself links there, and *Copy diagnostics* keeps only the app id from the Play URL.
 
 ## 1.0.0 — 2026-10-07
 

@@ -112,7 +112,8 @@ Your userscript manager's menu (click its icon on a Play page) also has **Open A
 ## 🔒 Privacy
 
 - 🚫 No analytics, no tracking, no accounts, no servers of its own.
-- 🌐 Sideport only talks to the sources listed above, and only when you're on a Play app page. Requests go straight from your browser to those sites, like a normal visit, so they include any cookies you already have for that site (that's also what lets a passed Cloudflare check work for Sideport).
+- 🌐 Sideport only talks to the sources listed above, and only while you're on a Play app or search page. Requests go straight from your browser to those sites (through your userscript manager), so they include any cookies you already have for that site; that's also what lets a passed Cloudflare check work for Sideport.
+- 👀 Like anything an extension adds to a page, Sideport's button is part of the Play page, so Google Play's own scripts could notice that you use it.
 - 💾 It stores two things in your userscript manager's local storage: your settings, and a compact summary of Morphe's patch list (about 200 KB).
 
 ## 🛡️ Safety
@@ -128,9 +129,10 @@ Your userscript manager's menu (click its icon on a Play page) also has **Open A
 Sideport is a link helper, not a mirror. It never hosts, re-uploads or modifies files. Here is how it uses each source:
 
 - **Only on demand.** A source is contacted only when someone opens the Sideport menu on a Google Play app page, and only for that one app. Nothing is crawled or prefetched in bulk.
-- **From the user's own browser.** Requests come straight from the visitor's browser (no Sideport server in between), so your site sees normal visits and keeps its own ads, Cloudflare checks and download pages.
+- **From the user's own browser.** Requests come straight from the visitor's browser through their userscript manager (no Sideport server in between), with the visitor's own cookies, so your Cloudflare checks still apply. Background lookups are API or page requests, not page views, so they don't show your ads.
+- **Direct downloads skip your download page.** For the sources under *Direct download*, Sideport opens your file URL itself, so the visitor goes straight to the file. For APKCombo it first requests the same check-in token your download page uses, sent with your site's own `Referer`/`Origin`. Prefer link-only? See below.
 - **Light lookups.** To show *Available* or *Not found*, Sideport makes one lookup per app: your public search or API endpoint, or a `HEAD` request (APKPure gets two: one for the APK, one for the XAPK). Answers are kept in that browser tab for up to 30 minutes, so reopening the menu doesn't ask again.
-- **Your links stay yours.** Downloads open your own URLs; for store links, users land on your site.
+- **Your links stay yours.** Downloads open your own URLs, never a copy; for store links, users land on your site.
 
 📮 **Want your site removed, or changed** (for example link-only, no background checks)? [Open a removal request](https://github.com/heval99/sideport/issues/new?template=source-removal.yml&labels=source-removal) and it will be handled promptly. Sideport respects every request, no questions asked. The change ships in the next update, which installed copies receive automatically.
 
