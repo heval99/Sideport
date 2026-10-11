@@ -27,7 +27,7 @@
 <p align="center">
   <img src="docs/menus.png" width="736" alt="The Get APK menu: direct-download sources with live availability and versions, stores and mirrors, and the Morphe patches section">
   <br>
-  <sub>Every source is checked in the background, so you see which ones have the app (and which version) before clicking.</sub>
+  <sub>Direct-download sources and Uptodown are checked in the background, so you see which ones have the app (and which version) before clicking.</sub>
 </p>
 
 ---
@@ -70,14 +70,14 @@ A **Get APK** menu next to Play's Install button, with everything in one place:
 
 ### 🧩 Morphe patches
 
-<img src="https://www.google.com/s2/favicons?domain=morphe.software&amp;sz=32" width="16" height="16" alt=""> If [Morphe](https://morphe-patches.software/#apps) patches exist for the app, a **Morphe · N patches** button appears next to Get APK, and the menu lists the official patches and every community bundle. **Recommended bundles come first** and link to their repos:
+<img src="https://www.google.com/s2/favicons?domain=morphe.software&amp;sz=32" width="16" height="16" alt=""> If [Morphe](https://morphe-patches.software/#apps) patches exist for the app, a **Morphe · N patches** button appears next to Get APK (N is the largest single bundle; hover it to see every source), and the menu lists the official patches and every community bundle, with the app version each one was made for. **Recommended bundles come first** and link to their repos:
 
 - 🐦 [**piko**](https://github.com/crimera/piko): X and Instagram
 - 🤫 [**Hush** bundles by SysAdminDoc](https://github.com/SysAdminDoc): Facebook, Messenger, Instagram, TikTok, Threads, Telegram, Pinterest
 - ⌨️ [**Gboard patches**](https://github.com/jasonwu1994/Gboard-patches) by jasonwu1994: Gboard
 - ⚽ [**Heval**](https://github.com/heval99/Heval-Morphe-Patches): Sofascore, BeSoccer, BoxBox and more
 
-The patch list stays fresh: Sideport checks Morphe for changes every 30 minutes, which costs a few hundred bytes when nothing changed.
+The patch list stays fresh: Sideport checks Morphe for changes every 30 minutes (every 5 minutes while you browse apps that have no patches yet), which costs a few hundred bytes when nothing changed.
 
 ### ⚡ And also
 
@@ -112,8 +112,9 @@ Your userscript manager's menu (click its icon on a Play page) also has **Open A
 ## 🔒 Privacy
 
 - 🚫 No analytics, no tracking, no accounts, no servers of its own.
-- 🌐 Sideport only talks to the sources listed above, and only when you're on a Play app page. Requests go straight from your browser to those sites.
-- 💾 It stores two things in your userscript manager's local storage: your settings, and a compact summary of Morphe's patch list (about 180 KB).
+- 🌐 Sideport only talks to the sources listed above, and only while you're on a Play app or search page. Requests go straight from your browser to those sites (through your userscript manager), so they include any cookies you already have for that site; that's also what lets a passed Cloudflare check work for Sideport.
+- 👀 Like anything an extension adds to a page, Sideport's button is part of the Play page, so Google Play's own scripts could notice that you use it.
+- 💾 It stores two things in your userscript manager's local storage: your settings, and a compact summary of Morphe's patch list (about 200 KB).
 
 ## 🛡️ Safety
 
@@ -128,9 +129,10 @@ Your userscript manager's menu (click its icon on a Play page) also has **Open A
 Sideport is a link helper, not a mirror. It never hosts, re-uploads or modifies files. Here is how it uses each source:
 
 - **Only on demand.** A source is contacted only when someone opens the Sideport menu on a Google Play app page, and only for that one app. Nothing is crawled or prefetched in bulk.
-- **From the user's own browser.** Requests come straight from the visitor's browser (no Sideport server in between), so your site sees normal visits and keeps its own ads, Cloudflare checks and download pages.
-- **Light lookups.** To show *Available* or *Not found*, Sideport makes one lookup per app: your public search or API endpoint, or a `HEAD` request. Results are cached in the user's browser.
-- **Your links stay yours.** Downloads open your own URLs; for store links, users land on your site.
+- **From the user's own browser.** Requests come straight from the visitor's browser through their userscript manager (no Sideport server in between), with the visitor's own cookies, so your Cloudflare checks still apply. Background lookups are API or page requests, not page views, so they don't show your ads.
+- **Direct downloads skip your download page.** For the sources under *Direct download*, Sideport opens your file URL itself, so the visitor goes straight to the file. For APKCombo it first requests the same check-in token your download page uses, sent with your site's own `Referer`/`Origin`. Prefer link-only? See below.
+- **Light lookups.** To show *Available* or *Not found*, Sideport makes one lookup per app: your public search or API endpoint, or a `HEAD` request (APKPure gets two: one for the APK, one for the XAPK). Answers are kept in that browser tab for up to 30 minutes, so reopening the menu doesn't ask again.
+- **Your links stay yours.** Downloads open your own URLs, never a copy; for store links, users land on your site.
 
 📮 **Want your site removed, or changed** (for example link-only, no background checks)? [Open a removal request](https://github.com/heval99/sideport/issues/new?template=source-removal.yml&labels=source-removal) and it will be handled promptly. Sideport respects every request, no questions asked. The change ships in the next update, which installed copies receive automatically.
 
@@ -139,7 +141,7 @@ Sideport is a link helper, not a mirror. It never hosts, re-uploads or modifies 
 <details>
 <summary><b>A source says "Couldn't check · Cloudflare check".</b></summary>
 
-The site is asking for a browser check. Click the ↗ icon to open the site once; afterwards background checks usually work again.
+The site is asking for a browser check. Click the ↗ icon to open the site once, then reopen the Sideport menu: checks that failed are tried again each time the menu opens.
 </details>
 
 <details>
@@ -160,6 +162,7 @@ Yes, [open an issue](https://github.com/heval99/sideport/issues) or a pull reque
 - 🧩 **Recommend a Morphe bundle:** if it's listed on [morphe-patches.software](https://morphe-patches.software/#apps), send the GitHub repo. Adding it to the recommended list is a one-line change.
 - 🐞 **Report a bug:** include the output of **Copy diagnostics** (see the [FAQ](#-faq)).
 - 🔧 **Pull requests** are welcome. Please keep the script dependency-free and test it on a few app pages, both free and paid.
+- 🧪 **Automated tests:** `npm install` then `npm test` (Node 22+). They run the script in a simulated Play page with recorded source responses, so they need no browser or network. Every change to `sideport.user.js` also needs a higher `@version`; CI checks that.
 
 ## ☕ Support
 

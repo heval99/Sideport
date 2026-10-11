@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sideport
 // @namespace    https://github.com/heval99/sideport
-// @version      1.0.0
+// @version      1.2.0
 // @description  Get any Google Play app as an APK: direct downloads from 6 sources, APK stores, Morphe patches, open-source alternatives and opt-in mod sites — one button on every app page.
 // @author       heval99
 // @license      PolyForm-Noncommercial-1.0.0
@@ -38,18 +38,27 @@
 (function () {
     'use strict';
 
+    // Two copies of the script (e.g. installed from GitHub and from Greasy Fork) would each add a button and remove
+    // the other's on every navigation. The first one to run claims the page.
+    if (document.documentElement.dataset.sideport) return;
+    document.documentElement.dataset.sideport = 'running';
+
     const LOG_PREFIX = '[Sideport]';
     const REQUEST_TIMEOUT_MS = 12000;
     const RENDER_THROTTLE_MS = 150;
     const RETRY_DELAY_MS = 400;
+    const RESET_CONFIRM_MS = 4000;      // how long "Reset all settings?" waits for the confirming second click
     const SETTLE_MS = 2500;        // how long to wait for Play's install button before using a fallback anchor
     const GIVE_UP_MS = 20000;
     const MOUNT_STRATEGIES = ['inline', 'row', 'heading', 'banner'];
     const CHURN_LIMIT = 5;              // removals within CHURN_WINDOW_MS before trying the next mount spot
     const CHURN_WINDOW_MS = 10000;
     const THROTTLE_AFTER_REMOUNTS = 30; // after this many removals on one page, remount at most once a second
-    const PROBE_CONCURRENCY = 4;
+    const PROBE_CONCURRENCY = 8;        // every check goes to a different site, so fast ones needn't queue behind slow ones
+    const PROBE_CACHE_LIMIT = 400;      // availability answers kept per tab (about 45 apps' worth)
     const MISSING_RESULT_TTL_MS = 10 * 60 * 1000;   // "not found" answers are re-checked after this
+    const OK_RESULT_TTL_MS = 30 * 60 * 1000;        // "available" answers (and their versions) are re-checked after this
+    const DOWNLOAD_FRESH_MS = 10 * 60 * 1000;       // older file links are fetched again before a download uses them
     const SETTINGS_KEY = 'sideport-settings-v1';
     const PATCH_META_KEY = 'sideport-patch-meta-v3';   // { fetchedAt, communityEtag, officialEtag }: rewritten on every check
     const PATCH_DATA_KEY = 'sideport-patch-data-v3';   // { community, official }: rewritten only when Morphe changed
@@ -58,12 +67,15 @@
     const PATCH_INDEX_MISSING_RECHECK_MS = 5 * 60 * 1000;   // apps not in the list yet are re-checked sooner
     const PATCH_INDEX_RETRY_MS = 5 * 60 * 1000;             // back-off after a failed download
     const PATCH_INDEX_TIMEOUT_MS = 45000;
+    const MAX_RESPONSE_CHARS = 5 * 1024 * 1024;        // largest source answer accepted (the biggest real one is ~1 MB)
+    const MAX_PATCH_INDEX_CHARS = 25 * 1024 * 1024;    // Morphe's community index is ~2 MB today
     const MORPHE_BUNDLES_URL = 'https://morphe-patches.software/data/bundles.json';
     const MORPHE_OFFICIAL_URL = 'https://raw.githubusercontent.com/MorpheApp/morphe-patches/main/patches-list.json';
     const MORPHE_OFFICIAL_PAGE = 'https://morphe.software/';
     // Morphe brand colours (from morphe.software's stylesheet): a blue → teal gradient.
     const MORPHE_BLUE = '#1E5AA8';
     const MORPHE_TEAL = '#00AFAE';
+    const MORPHE_TEAL_TEXT = '#007F7E'; // darker end of the gradient behind white text (4.8:1 instead of 2.7:1)
     const DONATE_URL = 'https://ko-fi.com/heval99';
     // Morphe community bundles Sideport recommends: shown first in the Patches section, linked to their repo.
     // Entries are GitHub "owner/repo" (case-insensitive) or "owner/*" for all of an author's bundles.
@@ -102,7 +114,9 @@
         },
         {
             id: 'apkcombo', group: 'direct', label: 'APKCombo', color: '#00875f', hint: 'APK & XAPK variants',
-            hosts: ['apkcombo.com', 'apkcombo.app', 'r2.cloudflarestorage.com'], offersVariants: true,
+            // Files on Cloudflare R2 (a storage service shared by many sites) are trusted only when APKCombo's own
+            // /r2?u= link pointed there (see listApkComboVariants), not because of the domain alone.
+            hosts: ['apkcombo.com', 'apkcombo.app'], offersVariants: true,
             page: ctx => `https://apkcombo.com/genericApp/${ctx.encodedPackageId}/download/apk`,
             probe: probeApkCombo,
             resolve: resolveApkCombo
@@ -131,7 +145,8 @@
         izzyRepoSource({
             id: 'guardian', label: 'Guardian Project', color: '#6a3d9a', repo: 'guardian',
             hint: 'Official builds of privacy apps (Signal, Orbot\u2026)',
-            hosts: ['guardianproject.info', 'objectstorage.eu-amsterdam-1.oraclecloud.com']
+            // The repo serves files from GitLab Pages and from its own GitHub repo (not all of raw.githubusercontent.com).
+            hosts: ['guardianproject.info', 'guardianproject.gitlab.io', 'raw.githubusercontent.com/guardianproject/']
         }),
         izzyRepoSource({
             id: 'fdroid-archive', label: 'F-Droid archive', color: '#5c6bc0', repo: 'archive',
@@ -207,12 +222,17 @@
         strategy: 0,   // index into MOUNT_STRATEGIES
         lastMountAt: 0,
         hiddenPlacements: 0, // placements skipped because Play's widget was hidden
+        upgradedFallback: false, // the title fallback already moved next to a late install button
+        gaveUp: false,       // a search page without a top result: stop looking until the route changes
         dismissedRoute: '',
         mount: null,   // { root, anchor, ctx, widget }
         menu: null,    // persistent menu for the current route
         renderTimer: null,
+        lastRenderAt: 0,
         retryTimer: null,
-        positionFrame: 0
+        positionFrame: 0,
+        filterAnnounceTimer: null,
+        themeFrame: 0
     };
     const probeCache = new Map();
     const probeQueue = [];
@@ -226,7 +246,7 @@
     let patchRefreshPromise = null;
     let patchIndexFailedAt = 0;
 
-    start();
+    start().catch(error => console.error(`${LOG_PREFIX} Could not start`, error));
 
     // ---------------------------------------------------------------- lifecycle
 
@@ -238,17 +258,34 @@
         window.navigation?.addEventListener?.('navigatesuccess', () => scheduleRender());
         window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', refreshTheme);
         new MutationObserver(() => scheduleRender()).observe(document.documentElement, { childList: true, subtree: true });
+        // Play's own theme setting restyles the page without touching the OS setting: watch just <html> and <body>.
+        const themeObserver = new MutationObserver(refreshTheme);
+        for (const node of [document.documentElement, document.body]) {
+            if (node) themeObserver.observe(node, { attributes: true, attributeFilter: ['class', 'style', 'dark'] });
+        }
         registerMenuCommands();
         scheduleRender();
     }
 
-    // Throttled rather than debounced: Play mutates the DOM constantly, which would starve a debounce.
-    function scheduleRender(delay = RENDER_THROTTLE_MS) {
+    // Throttled rather than debounced: Play mutates the DOM constantly, which would starve a debounce. After a quiet
+    // spell the render runs at once, so the button doesn't wait for a timer; changes within RENDER_THROTTLE_MS of
+    // a render are batched into one more render at the end of that window.
+    function scheduleRender() {
         if (state.renderTimer) return;
+        const wait = state.lastRenderAt + RENDER_THROTTLE_MS - Date.now();
+        if (wait <= 0) {
+            runRender();
+            return;
+        }
         state.renderTimer = window.setTimeout(() => {
             state.renderTimer = null;
-            renderForCurrentPage();
-        }, delay);
+            runRender();
+        }, wait);
+    }
+
+    function runRender() {
+        state.lastRenderAt = Date.now();
+        renderForCurrentPage();
     }
 
     function scheduleRetry(delay = RETRY_DELAY_MS) {
@@ -267,11 +304,16 @@
             state.removals = [];
             state.strategy = 0;
             state.hiddenPlacements = 0;
+            state.upgradedFallback = false;
+            state.gaveUp = false;
         }
-        if (!route || state.dismissedRoute === key) return;
+        if (!route || state.gaveUp || state.dismissedRoute === key) return;
 
         if (state.mount) {
-            if (state.mount.root.isConnected) return;
+            if (state.mount.root.isConnected) {
+                upgradeFallbackMount(route);
+                return;
+            }
             closeMenu(false);
             state.mount = null;
             noteRemoval();
@@ -282,6 +324,20 @@
             scheduleRetry(1000 - sinceLastMount);
             return;
         }
+        tryMount(route);
+    }
+
+    // On a slow page the button can land on the title fallback before Play renders its install button. Move it next to
+    // the button once that shows up: only from the timed fallback (not after escalating away from a churning or
+    // hidden widget), once per page, and not while the menu is open.
+    function upgradeFallbackMount(route) {
+        const mount = state.mount;
+        if (state.strategy !== 0 || state.upgradedFallback || !route.isDetails || state.menu?.open
+            || !mount.root.matches('.pas-after-heading, .pas-banner') || Date.now() - state.routeStart > GIVE_UP_MS) return;
+        if (!findActionWidget(route.packageId)) return;
+        state.upgradedFallback = true;
+        mount.root.remove();
+        state.mount = null;
         tryMount(route);
     }
 
@@ -341,10 +397,16 @@
             scheduleRetry();
             return;
         }
-        if (!packageId || (!route.isDetails && !widget)) return;
+        if (!packageId || (!route.isDetails && !widget)) {
+            // A search page with no top result after GIVE_UP_MS: stop re-scanning on every DOM change until the route
+            // changes. (Not after escalating: there, Play is re-rendering a widget that will come back.)
+            if (!escalated && elapsed >= GIVE_UP_MS) state.gaveUp = true;
+            return;
+        }
 
         const ctx = createContext(packageId, widget);
-        const heading = route.isDetails && (document.querySelector('main h1') || document.querySelector('h1'));
+        // The shown heading only: Play keeps the previous app's page (and its <h1>) hidden after in-app navigation.
+        const heading = route.isDetails && visibleHeading();
         if (heading && strategy !== 'banner') {
             mountAfterHeading(heading, ctx);
         } else {
@@ -384,6 +446,14 @@
         setMount(root, anchor, ctx, null);
     }
 
+    // Play shows "Not Found" for apps it doesn't list at all (removed, or a mistyped link); otherwise the app exists
+    // but isn't offered here (region, device).
+    function bannerMessage() {
+        return /not found/i.test(document.title)
+            ? 'Google Play doesn’t list this app. You can still look for its APK.'
+            : 'This app isn’t available on Google Play here. You can still look for the APK.';
+    }
+
     function mountBanner(ctx, message = null) {
         const anchor = createMainButton();
         const dismiss = el('button', {
@@ -392,10 +462,11 @@
                 state.dismissedRoute = state.routeKey;
                 closeMenu(false);
                 root.remove();
+                state.mount = null;
             }
         }, icon('close'));
         const root = el('div', { className: 'pas-root pas-mount pas-banner', role: 'region', 'aria-label': 'APK sources' },
-            el('p', { className: 'pas-banner-text', text: message || 'This app isn’t available on Google Play here. You can still look for the APK.' }),
+            el('p', { className: 'pas-banner-text', text: message || bannerMessage() }),
             anchor,
             dismiss);
         document.body.append(root);
@@ -419,8 +490,16 @@
     }
 
     function registerMenuCommands() {
-        if (typeof GM?.registerMenuCommand !== 'function') return;
-        const requireApp = action => () => (state.mount ? action() : showToast('Open an app page on Google Play first'));
+        // `typeof GM?.x` would still throw when GM isn't defined at all, so check GM itself first.
+        if (typeof GM === 'undefined' || typeof GM.registerMenuCommand !== 'function') return;
+        const requireApp = action => () => {
+            // Asking for the menu after dismissing the banner on this page brings the button back.
+            if (!state.mount && state.dismissedRoute && state.dismissedRoute === state.routeKey) {
+                state.dismissedRoute = '';
+                renderForCurrentPage();
+            }
+            return state.mount ? action() : showToast('Open an app page on Google Play first');
+        };
         GM.registerMenuCommand('Open APK sources', requireApp(() => openMenu('sources', true)));
         GM.registerMenuCommand('APK source settings', requireApp(() => openMenu('settings', true)));
         GM.registerMenuCommand('Copy package ID', copyPackageId);
@@ -441,29 +520,44 @@
     }
 
     async function loadSettings() {
-        const defaults = defaultSettings();
         try {
-            const saved = await GM.getValue(SETTINGS_KEY, null);
-            if (!saved || typeof saved !== 'object') return defaults;
-            const sources = { ...defaults.sources };
-            for (const id of Object.keys(sources)) {
-                if (typeof saved.sources?.[id] === 'boolean') sources[id] = saved.sources[id];
-            }
-            return {
-                showMods: typeof saved.showMods === 'boolean' ? saved.showMods : defaults.showMods,
-                showPatches: typeof saved.showPatches === 'boolean' ? saved.showPatches : defaults.showPatches,
-                autoCheck: typeof saved.autoCheck === 'boolean' ? saved.autoCheck : defaults.autoCheck,
-                openInNewTab: typeof saved.openInNewTab === 'boolean' ? saved.openInNewTab : defaults.openInNewTab,
-                sources
-            };
+            return parseSettings(await GM.getValue(SETTINGS_KEY, null));
         } catch (error) {
             console.warn(`${LOG_PREFIX} Could not load settings`, error);
-            return defaults;
+            return defaultSettings();
         }
     }
 
-    function saveSettings() {
-        Promise.resolve(GM.setValue(SETTINGS_KEY, settings)).catch(error => {
+    function parseSettings(saved) {
+        const defaults = defaultSettings();
+        if (!saved || typeof saved !== 'object') return defaults;
+        const sources = { ...defaults.sources };
+        for (const id of Object.keys(sources)) {
+            if (typeof saved.sources?.[id] === 'boolean') sources[id] = saved.sources[id];
+        }
+        return {
+            showMods: typeof saved.showMods === 'boolean' ? saved.showMods : defaults.showMods,
+            showPatches: typeof saved.showPatches === 'boolean' ? saved.showPatches : defaults.showPatches,
+            autoCheck: typeof saved.autoCheck === 'boolean' ? saved.autoCheck : defaults.autoCheck,
+            openInNewTab: typeof saved.openInNewTab === 'boolean' ? saved.openInNewTab : defaults.openInNewTab,
+            sources
+        };
+    }
+
+    // Every Play tab keeps its own copy of the settings. A change is applied to this copy and to the freshly read
+    // stored settings, so saving doesn't undo what another tab changed in the meantime. Without a change (reset),
+    // this tab's copy is written as a whole. Saves run one at a time so quick toggles can't overwrite each other.
+    let settingsSaves = Promise.resolve();
+    function saveSettings(change = null) {
+        change?.(settings);
+        settingsSaves = settingsSaves.then(async () => {
+            let next = settings;
+            if (change) {
+                next = parseSettings(await GM.getValue(SETTINGS_KEY, null));
+                change(next);
+            }
+            await GM.setValue(SETTINGS_KEY, next);
+        }).catch(error => {
             console.warn(`${LOG_PREFIX} Could not save settings`, error);
             showToast('Could not save settings');
         });
@@ -483,9 +577,9 @@
 
     // App name and price can render after the button is mounted, so re-read them whenever the menu opens.
     function refreshContext(ctx, widget) {
-        ctx.appName = readAppName() || ctx.appName || ctx.packageId;
+        ctx.appName = readAppName(widget) || ctx.appName || ctx.packageId;
         ctx.searchName = modSearchName(ctx.appName, ctx.packageId);
-        ctx.isFree = !isPaidApp(widget);
+        ctx.isFree = !isPaidApp(widget, ctx.packageId);
     }
 
     // Mod sites are English and search by name. Play shows translated names on other languages' pages, so a
@@ -543,8 +637,10 @@
         return match ? toPackageId(match[1]) : null;
     }
 
-    function readAppName() {
-        const heading = cleanText(document.querySelector('h1')?.textContent);
+    function readAppName(widget) {
+        // Search pages have no <h1>, and their title holds the search query: the name is in the top result's card.
+        if (!location.pathname.endsWith('/apps/details')) return cardName(widget);
+        const heading = cleanText(visibleHeading()?.textContent);
         if (heading) return heading;
         // Page titles look like "<App name> - <store name>"; keep the part before the last separator.
         const title = cleanText(document.title);
@@ -552,8 +648,29 @@
         return separator > 0 ? title.slice(0, separator).trim() : null;
     }
 
-    function isPaidApp(widget) {
-        if (structuredDataPrice() > 0 || microdataPrice() > 0) return true;
+    // After in-app navigation Play keeps the previous page in the DOM, hidden, so only a heading that is actually
+    // shown belongs to the current app. (Without layout, as in tests, the newest page's heading comes last.)
+    function visibleHeading() {
+        const headings = [...document.querySelectorAll('h1')];
+        return (hasLayout() ? headings.find(isRendered) : headings.at(-1)) || null;
+    }
+
+    // The first text in the result card around Play's widget is the app's name ("Spotify: Music and Podcasts").
+    function cardName(widget) {
+        for (let node = widget?.parentElement, depth = 0; node && depth < 6; node = node.parentElement, depth += 1) {
+            const leaf = [...node.querySelectorAll('*')]
+                .find(element => !element.children.length && !widget.contains(element) && !element.closest('.pas-root')
+                    && cleanText(element.textContent).length > 1);
+            if (leaf) return cleanText(leaf.textContent).slice(0, 100);
+        }
+        return null;
+    }
+
+    function isPaidApp(widget, packageId) {
+        // Play can keep the previous app's price data in the page after in-app navigation. Structured data that is
+        // about this package decides; the page-wide <meta> price only counts when there is none.
+        const listedPrice = structuredDataPrice(packageId);
+        if (listedPrice > 0 || (listedPrice === null && microdataPrice() > 0)) return true;
         const label = cleanText(`${widget?.textContent || ''} ${widget?.getAttribute?.('aria-label') || ''}`);
         // A price on the button: a currency symbol ("€4.99", "4,99 €"), an ISO code before or after the amount
         // ("USD 4.99", "4.99 PLN"), or a common local abbreviation ("4,99 zł", "25 kr", "99 Kč").
@@ -568,8 +685,11 @@
         return Number.parseFloat(raw.replace(/[^\d.,]/g, '').replace(',', '.')) || 0;
     }
 
-    // Play embeds schema.org data for the app; a positive offer price means it's a paid app.
-    function structuredDataPrice() {
+    // Play embeds schema.org data for the app; a positive offer price means it's a paid app. Entries whose url names
+    // another app are skipped. Returns the price, 0 when an entry for this exact package says it's free, or null
+    // when nothing in the page is known to be about this package.
+    function structuredDataPrice(packageId) {
+        let free = null;
         for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
             let data;
             try {
@@ -577,12 +697,27 @@
             } catch {
                 continue;
             }
-            for (const offer of [].concat(data?.offers || [])) {
-                const price = Number.parseFloat(String(offer?.price ?? '').replace(',', '.'));
-                if (price > 0) return price;
+            const items = [].concat(data || []).flatMap(item => [item, ...[].concat(item?.['@graph'] || [])]);
+            for (const item of items) {
+                const about = schemaPackage(item);
+                if (about && about !== packageId) continue;
+                for (const offer of [].concat(item?.offers || [])) {
+                    const price = Number.parseFloat(String(offer?.price ?? '').replace(',', '.'));
+                    if (price > 0) return price;
+                    if (price === 0 && about) free = 0;
+                }
             }
         }
-        return 0;
+        return free;
+    }
+
+    // The package a schema.org entry is about, from its Play url (…/details?id=<package>), if it says.
+    function schemaPackage(item) {
+        for (const value of [item?.url, item?.['@id']]) {
+            const id = typeof value === 'string' ? tryParseUrl(value, location.href)?.searchParams.get('id') : null;
+            if (id) return id;
+        }
+        return null;
     }
 
     function searchHint(ctx) {
@@ -603,6 +738,7 @@
         const filterWrap = el('div', { className: 'pas-filter-wrap' }, filter);
         const body = el('div', { className: 'pas-body' });
         const footer = el('div', { className: 'pas-footer' });
+        const live = el('div', { className: 'pas-sr-only', role: 'status', 'aria-live': 'polite' });
         const root = el('div', { className: 'pas-root pas-menu', role: 'dialog', 'aria-label': 'APK sources', tabindex: '-1', hidden: true },
             el('div', { className: 'pas-header' },
                 el('div', { className: 'pas-heading' },
@@ -613,15 +749,24 @@
                 el('button', { type: 'button', className: 'pas-icon-btn', 'aria-label': 'Close', title: 'Close', onClick: () => closeMenu(true) }, icon('close'))),
             filterWrap,
             body,
-            footer);
+            footer,
+            live);
 
-        filter.addEventListener('input', applyFilter);
+        filter.addEventListener('input', () => {
+            const shown = applyFilter();
+            // Say how many rows are left, once typing pauses (the list changes silently for screen readers).
+            window.clearTimeout(state.filterAnnounceTimer);
+            state.filterAnnounceTimer = window.setTimeout(() => {
+                if (!state.menu?.open || !filter.value.trim()) return;
+                live.textContent = shown ? `${shown} source${shown === 1 ? '' : 's'} match your filter.` : 'No sources match your filter.';
+            }, 500);
+        });
         root.addEventListener('keydown', handleMenuKeydown);
         // Keep Play's own click handlers away from our links and buttons.
         root.addEventListener('click', event => event.stopPropagation());
         document.body.append(root);
 
-        state.menu = { root, title, pkg, filter, filterWrap, body, footer, view: 'sources', rows: new Map(), actions: new Map(), anchor: null, open: false };
+        state.menu = { root, title, pkg, filter, filterWrap, body, footer, live, view: 'sources', rows: new Map(), actions: new Map(), anchor: null, open: false };
         return state.menu;
     }
 
@@ -638,6 +783,12 @@
     function openMenu(view, viaKeyboard) {
         const mount = state.mount;
         if (!mount?.anchor.isConnected) return;
+        // Opened from the userscript manager's menu while the button is scrolled away: bring it into view first, or
+        // positionMenu() would close the menu straight away. 'instant' because Play may set smooth scrolling.
+        const rect = mount.anchor.getBoundingClientRect();
+        if (rect.bottom < 0 || rect.top > window.innerHeight) mount.anchor.scrollIntoView({ block: 'center', behavior: 'instant' });
+        // A fallback mount has no widget yet; Play may have rendered it since, with the price on its button.
+        if (!mount.widget?.isConnected) mount.widget = findActionWidget(mount.ctx.packageId);
         refreshContext(mount.ctx, mount.widget);
 
         const menu = ensureMenu();
@@ -654,6 +805,8 @@
 
         menu.root.hidden = false;
         menu.open = true;
+        // Right-to-left pages (Arabic, Hebrew…) line the menu up with the button's right edge instead.
+        menu.rtl = getComputedStyle(mount.anchor).direction === 'rtl' || mount.anchor.closest('[dir]')?.getAttribute('dir') === 'rtl';
         mount.anchor.setAttribute('aria-expanded', 'true');
         positionMenu();
         window.addEventListener('scroll', onViewportChange, true);
@@ -724,9 +877,11 @@
         // Never taller than the space on the chosen side, so an upward menu can't cover its own button.
         menu.root.style.maxHeight = `${Math.max(120, Math.min(600, placeBelow ? spaceBelow : spaceAbove))}px`;
         const top = placeBelow ? rect.bottom + gap : rect.top - gap - menu.root.offsetHeight;
-        const left = Math.min(Math.max(margin, rect.left), viewportWidth - width - margin);
+        const left = Math.min(Math.max(margin, menu.rtl ? rect.right - width : rect.left), viewportWidth - width - margin);
         menu.root.style.top = `${Math.max(margin, top)}px`;
-        menu.root.style.left = `${Math.max(margin, left)}px`;
+        // Right-to-left pages put the scrollbar on the left, and fixed positions start after it.
+        const scrollbarOnLeft = menu.rtl ? Math.max(0, window.innerWidth - viewportWidth) : 0;
+        menu.root.style.left = `${Math.max(margin, left) - scrollbarOnLeft}px`;
     }
 
     function renderSourcesView() {
@@ -771,7 +926,7 @@
         menu.footer.replaceChildren(
             el('div', { className: 'pas-footer-group' },
                 el('button', { type: 'button', className: 'pas-text-btn', onClick: () => renderSettingsView(true) }, icon('settings'), 'Settings'),
-                hasProbes ? el('button', { type: 'button', className: 'pas-text-btn', title: 'Check availability again', onClick: recheckSources }, icon('refresh'), 'Re-check') : null),
+                hasProbes ? el('button', { type: 'button', className: 'pas-text-btn', title: 'Re-check availability', onClick: recheckSources }, icon('refresh'), 'Re-check') : null),
             supportLink('Support'));
         applyFilter();
     }
@@ -807,7 +962,7 @@
             sub = 'Couldn\u2019t check \u00b7 opens search';
         }
         const link = el('a', {
-            className: 'pas-row', href: url, target: '_blank', rel: 'noopener noreferrer', tabindex: '-1',
+            className: 'pas-row', href: url, target: '_blank', rel: 'noopener noreferrer', tabindex: '-1', title: `${source.label} · ${sub}`,
             'aria-busy': probe?.state === 'loading' ? 'true' : null,
             onClick: () => closeMenu(false)
         },
@@ -815,11 +970,12 @@
         el('span', { className: 'pas-row-text' },
             el('span', { className: 'pas-row-label', text: source.label }),
             el('span', { className: 'pas-row-sub', text: sub, dataset: tone ? { tone } : {} })),
-        el('span', { className: `pas-badge${source.badgeClass ? ` ${source.badgeClass}` : ''}`, text: badge }),
+        // Badges are visual labels; screen readers already get the row's name and status.
+        el('span', { className: `pas-badge${source.badgeClass ? ` ${source.badgeClass}` : ''}`, text: badge, 'aria-hidden': 'true' }),
         icon('open'));
         const item = el('li', {
             className: `pas-item${probe?.state === 'missing' ? ' is-missing' : ''}`,
-            dataset: { id: source.id, filter: `${source.label} ${hint || ''} ${safeHost(url)}`.toLowerCase() }
+            dataset: { id: source.id, filter: filterKey(`${source.label} ${hint || ''} ${safeHost(url)}`) }
         }, link);
         if (source.probe && state.menu) state.menu.rows.set(source.id, item);
         return item;
@@ -847,12 +1003,17 @@
         }
 
         const pageUrl = safeHttpsUrl(probe?.pageUrl) || toHttpsUrl(source.page(ctx));
-        const primary = el('button', { type: 'button', className: 'pas-row', tabindex: '-1', 'aria-busy': busy ? 'true' : null },
+        const primary = el('button', {
+            type: 'button', className: 'pas-row', tabindex: '-1', title: `${source.label} · ${sub}`, 'aria-busy': busy ? 'true' : null,
+            'aria-keyshortcuts': 'ArrowRight' // moves to "Open … website" (the side link is not in the Tab order)
+        },
             dot(source.color),
             el('span', { className: 'pas-row-text' },
                 el('span', { className: 'pas-row-label', text: source.label }),
                 el('span', { className: 'pas-row-sub', text: sub, dataset: tone ? { tone } : {} })),
-            busy ? el('span', { className: 'pas-spinner', 'aria-hidden': 'true' }) : el('span', { className: 'pas-badge', text: 'Download' }));
+            busy ? el('span', { className: 'pas-spinner', 'aria-hidden': 'true' })
+                // No "Download" badge on a source that doesn't have the app.
+                : probe?.state === 'missing' ? null : el('span', { className: 'pas-badge', text: 'Download', 'aria-hidden': 'true' }));
         primary.addEventListener('click', () => startDownload(source, ctx));
 
         const side = el('a', {
@@ -862,7 +1023,7 @@
 
         const item = el('li', {
             className: `pas-item${probe?.state === 'missing' ? ' is-missing' : ''}`,
-            dataset: { id: source.id, filter: `${source.label} ${source.hint} ${safeHost(pageUrl)}`.toLowerCase() }
+            dataset: { id: source.id, filter: filterKey(`${source.label} ${source.hint} ${safeHost(pageUrl)}`) }
         },
         el('div', { className: 'pas-row-wrap' }, primary, side),
         action?.files?.length ? buildFileList(action) : null);
@@ -905,7 +1066,7 @@
     function applyFilter() {
         const menu = state.menu;
         if (!menu || menu.view !== 'sources') return;
-        const query = menu.filter.value.trim().toLowerCase();
+        const query = filterKey(menu.filter.value);
         let visibleTotal = 0;
         menu.body.querySelectorAll('.pas-section').forEach(section => {
             let visible = 0;
@@ -920,6 +1081,12 @@
         const noMatch = menu.body.querySelector('.pas-no-match');
         if (noMatch) noMatch.hidden = !query || visibleTotal > 0;
         syncRoving();
+        return visibleTotal;
+    }
+
+    // Filter text and row text compared without case, spaces or punctuation: "fdroid" finds "F-Droid".
+    function filterKey(text) {
+        return String(text).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
     }
 
     function recheckSources() {
@@ -946,20 +1113,19 @@
         menu.root.setAttribute('aria-label', 'APK source settings');
         menu.filterWrap.hidden = true;
 
-        const update = (apply) => value => {
-            apply(value);
-            saveSettings();
+        // `apply` sets one setting on the given settings object (this tab's copy, then the stored one).
+        const update = (apply, after) => value => {
+            saveSettings(target => apply(target, value));
+            after?.();
         };
         const general = el('section', { className: 'pas-section', 'aria-label': 'General' },
             el('h3', { className: 'pas-section-title', text: 'General' }),
-            switchRow('Show modded APK sites', 'Unverified repackaged apps. Off by default.', settings.showMods, update(v => { settings.showMods = v; })),
-            switchRow('Show Morphe patches', 'Badge and menu section when patches exist for the app.', settings.showPatches, update(v => {
-                settings.showPatches = v;
-                syncPatchChip();
-            })),
+            switchRow('Show modded APK sites', 'Unverified repackaged apps. Off by default.', settings.showMods, update((s, v) => { s.showMods = v; })),
+            switchRow('Show Morphe patches', 'Badge and menu section when patches exist for the app.', settings.showPatches,
+                update((s, v) => { s.showPatches = v; }, syncPatchChip)),
             el('p', { className: 'pas-note pas-patch-status', role: 'status', text: patchStatusText() }),
-            switchRow('Check availability automatically', 'Asks direct-download sources in the background when the menu opens.', settings.autoCheck, update(v => { settings.autoCheck = v; })),
-            switchRow('Open downloads in a new tab', 'When off, downloads start from this tab.', settings.openInNewTab, update(v => { settings.openInNewTab = v; })));
+            switchRow('Check availability automatically', 'Asks direct-download sources in the background when the menu opens.', settings.autoCheck, update((s, v) => { s.autoCheck = v; })),
+            switchRow('Open downloads in a new tab', 'When off, downloads start from this tab.', settings.openInNewTab, update((s, v) => { s.openInNewTab = v; })));
 
         const groups = ['direct', 'stores', 'mods'].map(groupId => el('section', { className: 'pas-section', 'aria-label': GROUPS[groupId].label },
             el('h3', { className: 'pas-section-title', text: GROUPS[groupId].label }),
@@ -967,7 +1133,7 @@
                 source.label,
                 safeHost(source.page ? source.page(ctx) : source.url(ctx)),
                 settings.sources[source.id] !== false,
-                update(v => { settings.sources[source.id] = v; })))));
+                update((s, v) => { s.sources[source.id] = v; })))));
 
         const support = el('section', { className: 'pas-section', 'aria-label': 'Support Sideport' },
             el('div', { className: 'pas-support-card' },
@@ -983,19 +1149,36 @@
         menu.body.replaceChildren(general, support, ...groups);
         menu.footer.replaceChildren(
             el('button', { type: 'button', className: 'pas-text-btn', onClick: backToSources }, icon('back'), 'Back'),
-            el('button', { type: 'button', className: 'pas-text-btn', title: 'Download the latest Morphe patch list', onClick: refreshPatchList }, icon('refresh'), 'Patch list'),
-            el('button', {
-                type: 'button', className: 'pas-text-btn',
-                onClick: () => {
-                    settings = defaultSettings();
-                    saveSettings();
-                    syncPatchChip();
-                    renderSettingsView(true);
-                    showToast('Settings reset to defaults');
-                }
-            }, 'Reset'));
+            el('button', { type: 'button', className: 'pas-text-btn', title: 'Download the latest Morphe patch list', onClick: refreshPatchList }, icon('refresh'), 'Update patch list'),
+            resetButton());
         positionMenu();
         if (focus) menu.body.querySelector('input')?.focus();
+    }
+
+    // Resetting wipes every setting, so it takes a second click within RESET_CONFIRM_MS (the button asks in place,
+    // keeping focus where it is; no dialog).
+    function resetButton() {
+        let armed = null;
+        const button = el('button', {
+            type: 'button', className: 'pas-text-btn',
+            onClick: () => {
+                if (!armed) {
+                    button.textContent = 'Reset all settings?';
+                    armed = window.setTimeout(() => {
+                        armed = null;
+                        button.textContent = 'Reset';
+                    }, RESET_CONFIRM_MS);
+                    return;
+                }
+                window.clearTimeout(armed);
+                settings = defaultSettings();
+                saveSettings();
+                syncPatchChip();
+                renderSettingsView(true);
+                showToast('Settings reset to defaults');
+            }
+        }, 'Reset');
+        return button;
     }
 
     function backToSources() {
@@ -1131,7 +1314,7 @@
     async function startDownload(source, ctx) {
         if (state.menu?.actions.get(source.id)?.busy) return;
         const cached = source.probe ? probeCache.get(probeKey(ctx, source)) : null;
-        if (cached?.result.state === 'missing' && isReusable(cached, ctx, false)) {
+        if (cached?.result.state === 'missing' && isReusable(cached, ctx)) {
             setAction(source.id, { text: 'Not found here — try the site ↗', tone: 'error' });
             return;
         }
@@ -1142,7 +1325,8 @@
         const pendingTab = settings.openInNewTab && !expectChoice ? openPendingTab(source.label) : null;
         setAction(source.id, { busy: true, text: 'Finding the download…' });
         try {
-            const probe = source.probe ? await getProbe(ctx, source, { refreshUnknown: true }) : null;
+            // Signed download links expire, so file lists older than DOWNLOAD_FRESH_MS are fetched again.
+            const probe = source.probe ? await getProbe(ctx, source, { maxOkAge: DOWNLOAD_FRESH_MS }) : null;
             if (probe?.state === 'missing') throw new NotListed();
             const result = await source.resolve(ctx, probe?.state === 'ok' ? probe.data : null);
             assertCurrent(ctx);
@@ -1151,15 +1335,17 @@
             const files = (result.files || [])
                 .map(file => ({ ...file, url: safeHttpsUrl(file.url) }))
                 .filter(file => file.url)
-                .map(file => ({ ...file, trusted: isAllowedHost(file.url, source.hosts) }));
+                .map(file => ({ ...file, trusted: !file.warning && (file.viaSource === true || isAllowedHost(file.url, source.hosts)) }));
             if (!files.length) throw new SourceFailure('No download found');
             const allTrusted = files.every(file => file.trusted);
+            // A source's own warning (e.g. Aptoide's malware rank) explains itself better than the host check.
+            const warning = files.find(file => file.warning)?.warning || 'Unrecognised download host';
 
             if (!allTrusted || (result.kind === 'choice' && files.length > 1)) {
                 pendingTab?.close();
                 setAction(source.id, allTrusted
                     ? { text: `${files.length} files — pick one below`, files, filesIntro: 'Variants (APK / XAPK / architecture):' }
-                    : { text: 'Unrecognised download host — check before opening', tone: 'warn', files });
+                    : { text: `${warning} — check before opening`, tone: 'warn', files });
                 return;
             }
 
@@ -1243,22 +1429,32 @@
     }
 
     // Finished results are shared across visits to the same app; an unfinished one belongs to the visit that
-    // started it (navigation cancels it), so a later visit starts its own.
-    function isReusable(entry, ctx, refreshUnknown) {
+    // started it (navigation cancels it), so a later visit starts its own. Failed checks are never reused: checks
+    // only start from user actions (opening the menu, a download), and the site may be back by then, or the user
+    // just passed its Cloudflare check. "Not found" is kept for MISSING_RESULT_TTL_MS, "available" for
+    // OK_RESULT_TTL_MS (or maxOkAge, before a download uses its links).
+    function isReusable(entry, ctx, { maxOkAge = OK_RESULT_TTL_MS } = {}) {
         if (!entry) return false;
         const { state: status } = entry.result;
+        const age = Date.now() - entry.settledAt;
         if (status === 'loading') return entry.sessionId === ctx.sessionId;
-        if (status === 'unknown') return !refreshUnknown;
-        if (status === 'missing') return Date.now() - entry.settledAt < MISSING_RESULT_TTL_MS;
-        return true;
+        if (status === 'unknown') return false;
+        if (status === 'missing') return age < MISSING_RESULT_TTL_MS;
+        return age < maxOkAge;
     }
 
-    function getProbe(ctx, source, { refreshUnknown = false } = {}) {
+    function getProbe(ctx, source, { maxOkAge } = {}) {
         const key = probeKey(ctx, source);
         const entry = probeCache.get(key);
-        if (isReusable(entry, ctx, refreshUnknown)) return entry.promise;
+        if (isReusable(entry, ctx, { maxOkAge })) return entry.promise;
 
-        if (probeCache.size > 400) probeCache.clear();
+        // Bounded by dropping the oldest finished answers; a check that's still running is never dropped (that would
+        // let the next caller start the same request again).
+        probeCache.delete(key); // re-inserted below, so the Map's order stays oldest-first
+        for (const [oldKey, old] of probeCache) {
+            if (probeCache.size < PROBE_CACHE_LIMIT) break;
+            if (old.result.state !== 'loading') probeCache.delete(oldKey);
+        }
         const fresh = { result: { state: 'loading' }, sessionId: ctx.sessionId, settledAt: 0 };
         fresh.promise = withProbeSlot(() => source.probe(ctx))
             .then(
@@ -1285,9 +1481,22 @@
 
     // Store lookups are harmless for paid apps too; direct-download checks only run for free apps.
     function runProbes(ctx) {
-        [...(ctx.isFree ? enabledSources('direct') : []), ...enabledSources('stores')]
+        const checks = [...(ctx.isFree ? enabledSources('direct') : []), ...enabledSources('stores')]
             .filter(source => source.probe)
-            .forEach(source => getProbe(ctx, source).catch(() => {}));
+            .map(source => getProbe(ctx, source).then(result => result.state, () => null));
+        Promise.all(checks).then(states => announceResults(ctx, states));
+    }
+
+    // Rows update silently for screen readers, so say once what the checks found (skipped if the menu closed,
+    // the app changed, or a check was cancelled).
+    function announceResults(ctx, states) {
+        const menu = state.menu;
+        if (!states.length || states.includes(null) || !menu?.open || menu.view !== 'sources' || state.mount?.ctx.packageId !== ctx.packageId) return;
+        const count = status => states.filter(value => value === status).length;
+        const parts = [[count('ok'), 'available'], [count('missing'), 'not found'], [count('unknown'), 'couldn’t be checked']]
+            .filter(([number]) => number)
+            .map(([number, text]) => `${number} ${text}`);
+        menu.live.textContent = `Availability checked: ${parts.join(', ')}.`;
     }
 
     function withProbeSlot(task) {
@@ -1315,8 +1524,13 @@
     // HEAD follows the redirect to winudf.com without downloading the file.
     async function probeApkPure(ctx, variant) {
         const result = await gmFetch(apkPureDirectUrl(ctx, variant), ctx, { method: 'HEAD' });
-        if (hostMatches(safeHost(result.finalUrl), ['winudf.com'])) {
-            const fileName = fileNameFromHeaders(result.headers) || safeDecode(new URL(result.finalUrl).pathname);
+        const finalUrl = tryParseUrl(result.finalUrl);
+        if (finalUrl && hostMatches(finalUrl.hostname, ['winudf.com'])) {
+            expectSuccess(result);
+            // winudf links carry the file name in the query (?filename=…); the path is an opaque id.
+            const fileName = fileNameFromHeaders(result.headers) || finalUrl.searchParams.get('filename') || '';
+            // Apps without an XAPK get redirected to the plain APK instead: that means "no XAPK", not a second APK.
+            if (variant === 'XAPK' && !finalUrl.pathname.startsWith('/XAPK/') && !/\.xapk$/i.test(fileName)) throw new NotListed();
             return { version: versionFromFileName(fileName) };
         }
         expectSuccess(result);
@@ -1346,7 +1560,9 @@
             variants.set(target.href, {
                 url: target.href,
                 label: cleanText(anchor.textContent).slice(0, 80) || `Variant ${variants.size + 1}`,
-                needsToken: !wrapped
+                needsToken: !wrapped,
+                // APKCombo itself handed out this storage link.
+                viaSource: Boolean(wrapped) && hostMatches(wrapped.hostname, ['r2.cloudflarestorage.com'])
             });
         }
         return [...variants.values()];
@@ -1369,10 +1585,15 @@
 
     async function probeAptoide(ctx) {
         const result = await fetchJson(`https://web-api.aptoide.com/search?query=${ctx.encodedPackageId}`, ctx);
-        const listing = (result.json?.datalist?.list || []).find(entry => entry?.package === ctx.packageId);
+        // Aptoide also hosts user-run stores. Its own malware check ranks every file (TRUSTED, WARNING, UNKNOWN…):
+        // prefer a TRUSTED listing, and don't open anything else before the user has seen the rank.
+        const listings = (result.json?.datalist?.list || []).filter(entry => entry?.package === ctx.packageId);
+        const listing = listings.find(entry => entry.file?.malware?.rank === 'TRUSTED') || listings[0];
         const files = listing ? aptoideParts(listing) : [];
         if (!files.length) throw new NotListed();
-        return { version: listing.file?.vername || null, data: { files } };
+        const rank = listing.file?.malware?.rank;
+        const warning = rank === 'TRUSTED' ? null : rank ? `Aptoide's malware check says ${String(rank).slice(0, 20)}` : 'Aptoide hasn’t checked this file';
+        return { version: listing.file?.vername || null, data: { files: files.map(file => ({ ...file, warning })) } };
     }
 
     // Base APK first, then any split APKs and expansion (OBB) files that must be installed with it.
@@ -1388,35 +1609,66 @@
     }
 
     // Uptodown's search, queried with a package id, returns exactly that app, or an "empty-search" list
-    // followed by unrelated suggestions, so the empty marker must be checked first.
+    // followed by unrelated suggestions, so the empty marker must be checked first. A page with neither is not a
+    // search result we recognise (maintenance, a changed layout), so it's "couldn't check", not "not found".
     async function probeUptodown(ctx) {
         const page = await fetchText(`https://en.uptodown.com/android/search?query=${ctx.encodedPackageId}`, ctx);
         if (page.text.includes('data-list-name="empty-search"')) throw new NotListed();
         const appPage = /https:\/\/[a-z0-9-]+\.en\.uptodown\.com\/android/.exec(page.text)?.[0];
-        if (!appPage) throw new NotListed();
+        if (!appPage) throw new SourceFailure('Unexpected answer from the site');
         return { version: null, pageUrl: `${appPage}/download` };
     }
 
     // Other F-Droid-format repos, read through IzzyOnDroid's multi-repo browser. The page lists direct APK
-    // links (newest first) and a "Version:" row; it answers 404 when the repo doesn't carry the app.
+    // links (newest first) and a "Version:" row; it answers 404 when the repo doesn't carry the app (expectSuccess
+    // turns that into "not found"), so a 200 page without an APK link is one we don't recognise.
     function izzyRepoSource({ id, label, color, repo, hint, hosts, defaultOn }) {
         const page = ctx => `https://apt.izzysoft.de/fdroid/index/apk/${ctx.encodedPackageId}?repo=${repo}`;
         const probe = async ctx => {
             const result = await fetchText(page(ctx), ctx);
-            const doc = parseMarkup(result.text);
-            const apk = [...doc.querySelectorAll('a[href]')]
-                .map(anchor => tryParseUrl(anchor.getAttribute('href'), result.finalUrl))
-                .find(url => url?.protocol === 'https:' && /\.apk$/i.test(url.pathname));
-            if (!apk) throw new NotListed();
-            // The row is labelled "Version:" or "Last Version:" depending on the page.
-            const versionCell = [...doc.querySelectorAll('td')].find(cell => /^(?:Last\s*)?Version:$/i.test(cleanText(cell.textContent)));
-            const version = cleanText(versionCell?.nextElementSibling?.textContent) || null;
+            // The archive's page lists every old build (about 1 MB of HTML), so a text scan finds the first APK link and
+            // the version row; building a whole DOM is only the fallback for a layout the scan doesn't recognise.
+            const found = scanRepoPage(result.text, result.finalUrl) || parseRepoPage(result.text, result.finalUrl);
+            if (!found) throw new SourceFailure('Unexpected answer from the site');
+            const { apk, version } = found;
             return { version, data: { files: [{ url: apk.href, label: `APK${version ? ` \u00b7 v${version}` : ''}` }] } };
         };
         return {
             id, group: 'direct', label, color, hint, hosts, page, probe, defaultOn,
             resolve: async (ctx, data) => ({ files: (data || (await probe(ctx)).data).files })
         };
+    }
+
+    // The first https link to an .apk file, and the "Version:" / "LastVersion:" row (<td><b>LastVersion:</b></td><td>1.2</td>).
+    function scanRepoPage(text, baseUrl) {
+        let apk = null;
+        for (const match of text.matchAll(/href=(["'])([^"']+)\1/gi)) {
+            const url = tryParseUrl(match[2].replace(/&amp;/g, '&'), baseUrl);
+            if (url?.protocol === 'https:' && /\.apk$/i.test(url.pathname)) {
+                apk = url;
+                break;
+            }
+        }
+        if (!apk) return null;
+        // Only search near each "Version:" label: the page can be ~1 MB, and this pattern backtracks on long runs of tags.
+        let cell;
+        for (const label of [...text.matchAll(/Version:/gi)].slice(0, 20)) {
+            const near = text.slice(Math.max(0, label.index - 300), label.index + 700);
+            cell = /<td[^>]*>(?:\s|<[^>]+>)*(?:Last\s*)?Version:(?:\s|<[^>]+>)*<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>/i.exec(near)?.[1];
+            if (cell !== undefined) break;
+        }
+        return { apk, version: cell ? cleanText(cell.replace(/<[^>]+>/g, ' ')) || null : null };
+    }
+
+    function parseRepoPage(text, baseUrl) {
+        const doc = parseMarkup(text);
+        const apk = [...doc.querySelectorAll('a[href]')]
+            .map(anchor => tryParseUrl(anchor.getAttribute('href'), baseUrl))
+            .find(url => url?.protocol === 'https:' && /\.apk$/i.test(url.pathname));
+        if (!apk) return null;
+        // The row is labelled "Version:" or "Last Version:" depending on the page.
+        const versionCell = [...doc.querySelectorAll('td')].find(cell => /^(?:Last\s*)?Version:$/i.test(cleanText(cell.textContent)));
+        return { apk, version: cleanText(versionCell?.nextElementSibling?.textContent) || null };
     }
 
     function fdroidRepoSource({ id, label, color, apiBase, repoBase, page, hosts }) {
@@ -1593,7 +1845,7 @@
     // Conditional GET: a 304 returns the previous part unchanged (same object), anything else is rebuilt.
     async function fetchIndexPart(url, previous, build) {
         const headers = previous?.etag ? { 'If-None-Match': previous.etag } : undefined;
-        const reply = await gmFetch(url, null, { headers, timeout: PATCH_INDEX_TIMEOUT_MS });
+        const reply = await gmFetch(url, null, { headers, timeout: PATCH_INDEX_TIMEOUT_MS, maxLength: MAX_PATCH_INDEX_CHARS });
         if (reply.status === 304 && previous) return previous;
         expectSuccess(reply);
         let json;
@@ -1602,7 +1854,7 @@
         } catch {
             throw new SourceFailure('Unexpected response');
         }
-        const etag = reply.headers.match(/^etag:\s*(.+?)\s*$/im)?.[1] || null;
+        const etag = headerValue(reply.headers, 'etag');
         const apps = build(json);
         // Same content without a 304 (e.g. the server sent no ETag): keep the old object so nothing redraws.
         if (previous && JSON.stringify(apps) === JSON.stringify(previous.apps)) return { etag, apps: previous.apps };
@@ -1642,7 +1894,11 @@
     function buildOfficialIndex(data) {
         const apps = {};
         for (const [packageName, info] of countPatchesByPackage(data?.patches, patch => patch.compatiblePackages)) {
-            apps[packageName] = { name: String(info.name || ''), patches: info.count, versions: latestVersions(info.versions) };
+            apps[packageName] = {
+                name: String(info.name || ''), patches: info.count, versions: latestVersions(info.versions),
+                // Morphe marks apps whose patches only work on a full APK (not a split bundle such as XAPK).
+                apkRequired: info.fileTypes.has('APK_REQUIRED')
+            };
         }
         return apps;
     }
@@ -1658,16 +1914,22 @@
                 ? compatible.map(item => ({
                     packageName: item?.packageName,
                     name: item?.name,
+                    fileType: item?.apkFileType,
                     versions: list(item?.targets).map(target => target?.version).concat(list(item?.versions))
                 }))
                 : compatible && typeof compatible === 'object'
                     ? Object.entries(compatible).map(([packageName, versions]) => ({ packageName, versions: list(versions) }))
                     : [];
+            // Bundles can list a patch more than once for an app (the same package twice, or per-version copies under the
+            // same name), so each app counts distinct patch names. Unnamed patches count once each.
+            const name = typeof patch.name === 'string' && patch.name.trim() ? patch.name.trim().toLowerCase() : Symbol('unnamed');
             for (const target of targets) {
                 if (!toPackageId(target.packageName)) continue;
-                const info = perApp.get(target.packageName) || { count: 0, name: target.name, versions: new Set() };
-                info.count += 1;
+                const info = perApp.get(target.packageName) || { count: 0, names: new Set(), name: target.name, versions: new Set(), fileTypes: new Set() };
+                if (!info.names.has(name)) info.count += 1;
+                info.names.add(name);
                 target.versions.forEach(version => version && info.versions.add(String(version)));
+                if (typeof target.fileType === 'string') info.fileTypes.add(target.fileType);
                 perApp.set(target.packageName, info);
             }
         }
@@ -1675,10 +1937,11 @@
     }
 
     // Newest first. Only the leading dotted number counts ("1.2.3-beta4" → 1.2.3); on a tie, a plain release
-    // ranks above a pre-release.
+    // ranks above a pre-release (anything after the number).
     function latestVersions(versions) {
-        const numbers = version => (version.match(/^\d+(?:\.\d+)*/)?.[0] || '0').split('.').map(Number);
-        const isPreRelease = version => /^\d+(?:\.\d+)*\D/.test(version);
+        const lead = version => version.match(/^\d+(?:\.\d+)*/)?.[0] || '';
+        const numbers = version => (lead(version) || '0').split('.').map(Number);
+        const isPreRelease = version => version !== lead(version);
         return [...versions]
             .sort((a, b) => {
                 const left = numbers(a);
@@ -1709,20 +1972,28 @@
         return `${count} patch${count === 1 ? '' : 'es'}`;
     }
 
+    // Which app versions a bundle's patches were made for. Sideport doesn't know the version Play would install,
+    // so this says what the patches target rather than claiming they fit this download.
+    function targetVersions(versions, all = false) {
+        if (!versions.length) return 'any version';
+        return `for v${all ? versions.join(' / ') : versions[0]}`;
+    }
+
     function morpheAppUrl(ctx, app) {
-        return app.inStore && app.community.length
-            ? `https://morphe-patches.software/?app=${ctx.encodedPackageId}#apps`
-            : MORPHE_OFFICIAL_PAGE;
+        if (!app.community.length) return MORPHE_OFFICIAL_PAGE;
+        // Community bundles live on the community index, even for an app that has no store page there.
+        return app.inStore ? `https://morphe-patches.software/?app=${ctx.encodedPackageId}#apps` : 'https://morphe-patches.software/#apps';
     }
 
     function patchSources(ctx) {
         const app = patchInfo(ctx.packageId);
         if (!app) return [];
         const appUrl = morpheAppUrl(ctx, app);
-        const describe = (patches, versions) => `${pluralPatches(patches)}${versions[0] ? ` · v${versions[0]}` : ''}`;
+        const describe = (patches, versions) => `${pluralPatches(patches)} · ${targetVersions(versions)}`;
         const rows = [];
         if (app.official) {
-            rows.push({ id: 'morphe-official', label: 'Morphe (official)', color: MORPHE_BLUE, badge: 'Patch', badgeClass: 'pas-badge-morphe', url: MORPHE_OFFICIAL_PAGE, hint: describe(app.official.patches, app.official.versions) });
+            const hint = `${describe(app.official.patches, app.official.versions)}${app.official.apkRequired ? ' · full APK only' : ''}`;
+            rows.push({ id: 'morphe-official', label: 'Morphe (official)', color: MORPHE_BLUE, badge: 'Patch', badgeClass: 'pas-badge-morphe', url: MORPHE_OFFICIAL_PAGE, hint });
         }
         const bundles = app.community.map(bundle => ({ ...bundle, recommended: isRecommendedBundle(bundle.repo) }));
         // Stable sort: recommended first, otherwise keep the patch-count order from the index.
@@ -1761,17 +2032,20 @@
             return;
         }
 
-        const total = app.community.reduce((sum, bundle) => sum + bundle.patches, 0) + (app.official?.patches || 0);
+        // Bundles often repackage the same patches (forks of the official set), so adding them up would count the same
+        // patch many times. The chip shows the largest single source; the tooltip lists every source.
+        const largest = Math.max(app.official?.patches || 0, ...app.community.map(bundle => bundle.patches));
         const sources = app.community.length + (app.official ? 1 : 0);
         const details = [
-            app.official ? `Morphe official — ${pluralPatches(app.official.patches)}` : null,
-            ...app.community.map(bundle => `${bundle.bundle}${bundle.author ? ` (${bundle.author})` : ''} — ${pluralPatches(bundle.patches)}${bundle.versions.length ? `, v${bundle.versions.join(' / ')}` : ''}`)
+            app.official ? `Morphe official — ${pluralPatches(app.official.patches)}, ${targetVersions(app.official.versions, true)}${app.official.apkRequired ? ', full APK only' : ''}` : null,
+            ...app.community.map(bundle => `${bundle.bundle}${bundle.author ? ` (${bundle.author})` : ''} — ${pluralPatches(bundle.patches)}, ${targetVersions(bundle.versions, true)}`)
         ].filter(Boolean);
+        const sourceCount = `${sources} source${sources === 1 ? '' : 's'}`;
         const chip = el('a', {
             className: 'pas-chip', href: morpheAppUrl(ctx, app), target: '_blank', rel: 'noopener noreferrer',
-            title: `Morphe patches for this app:\n${details.join('\n')}`,
-            'aria-label': `Morphe patches available: ${pluralPatches(total)} from ${sources} source${sources === 1 ? '' : 's'}`
-        }, icon('extension'), el('span', { text: `Morphe · ${pluralPatches(total)}` }));
+            title: `Morphe patches for this app (${sourceCount}):\n${details.join('\n')}`,
+            'aria-label': `Morphe patches available: up to ${pluralPatches(largest)} in one bundle, from ${sourceCount}`
+        }, icon('extension'), el('span', { text: `Morphe · ${pluralPatches(largest)}` }));
         chip.addEventListener('click', event => event.stopPropagation());
         if (existing) existing.replaceWith(chip); else anchor.after(chip);
     }
@@ -1809,7 +2083,7 @@
     // Uses the callback form of GM.xmlHttpRequest: Greasemonkey 4 returns undefined instead of a promise, while
     // Tampermonkey and Violentmonkey support callbacks too. Page-bound requests are registered so teardown()
     // can cancel them when the user navigates away.
-    function gmFetch(url, ctx, { method = 'GET', headers, body, timeout = REQUEST_TIMEOUT_MS } = {}) {
+    function gmFetch(url, ctx, { method = 'GET', headers, body, timeout = REQUEST_TIMEOUT_MS, maxLength = MAX_RESPONSE_CHARS } = {}) {
         if (ctx !== null) assertCurrent(ctx);
         return new Promise((resolve, reject) => {
             let settled = false;
@@ -1826,9 +2100,12 @@
             try {
                 control = GM.xmlHttpRequest({
                     url, method, headers, data: body, timeout,
-                    onload: reply => (reply?.status
-                        ? finish('ok', { status: reply.status, finalUrl: reply.finalUrl || url, headers: reply.responseHeaders || '', text: reply.responseText || '' })
-                        : finish('fail', new SourceFailure('Network error'))),
+                    onload: reply => {
+                        if (!reply?.status) return finish('fail', new SourceFailure('Network error'));
+                        // A source's answer is parsed on the page's thread; refuse one far bigger than any real one.
+                        if ((reply.responseText || '').length > maxLength) return finish('fail', new SourceFailure('Response too large'));
+                        return finish('ok', { status: reply.status, finalUrl: reply.finalUrl || url, headers: reply.responseHeaders || '', text: reply.responseText || '' });
+                    },
                     onerror: failure => finish('fail', new SourceFailure(networkFailureReason(failure))),
                     ontimeout: () => finish('fail', new SourceFailure('Timed out')),
                     onabort: () => finish('fail', new SourceFailure('Cancelled'))
@@ -1908,7 +2185,8 @@
             else if (key === 'text') node.textContent = value;
             else if (key === 'dataset') Object.assign(node.dataset, value);
             else if (key === 'checked') node.checked = Boolean(value);
-            else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2).toLowerCase(), value);
+            // on* props only ever become listeners: a string would otherwise turn into an inline handler attribute.
+            else if (/^on/i.test(key)) { if (typeof value === 'function') node.addEventListener(key.slice(2).toLowerCase(), value); }
             else node.setAttribute(key, value === true ? '' : String(value));
         }
         node.append(...children.flat().filter(child => child != null && child !== false && child !== ''));
@@ -1966,8 +2244,12 @@
     }
 
     function refreshTheme() {
-        // Play repaints its own background first; wait a frame before sampling it.
-        window.requestAnimationFrame(() => applyTheme(state.mount?.root, state.menu?.root, document.querySelector('.pas-toast')));
+        // Play repaints its own background first; wait a frame before sampling it (one sample per frame).
+        if (state.themeFrame) return;
+        state.themeFrame = window.requestAnimationFrame(() => {
+            state.themeFrame = 0;
+            applyTheme(state.mount?.root, state.menu?.root, document.querySelector('.pas-toast'));
+        });
     }
 
     function showToast(message) {
@@ -1984,7 +2266,7 @@
     }
 
     async function copyText(text) {
-        if (typeof GM?.setClipboard === 'function') {
+        if (typeof GM !== 'undefined' && typeof GM.setClipboard === 'function') {
             await GM.setClipboard(text, 'text');
         } else {
             await navigator.clipboard.writeText(text);
@@ -1992,7 +2274,7 @@
     }
 
     async function copyPackageId() {
-        const packageId = state.mount?.ctx.packageId;
+        const packageId = state.mount?.ctx.packageId || getRoute()?.packageId;
         if (!packageId) {
             showToast('Open an app page on Google Play first');
             return;
@@ -2018,10 +2300,11 @@
         return {
             sideport: info?.script?.version || 'unknown',
             manager: info ? `${info.scriptHandler || 'unknown'} ${info.version || ''}`.trim() : 'unknown',
-            url: location.href,
+            // Only the app id: the rest of the Play URL (language, country, referrer tags) isn't needed for a bug report.
+            url: `${location.origin}${location.pathname}${route?.packageId ? `?id=${route.packageId}` : ''}`,
             pageLanguage: document.documentElement.lang || null,
             signedIn: Boolean(document.querySelector('[aria-label*="Google Account" i], [aria-label*="account menu" i] img, a[href*="SignOutOptions"]')),
-            route: route?.key || null,
+            route: route ? (route.isDetails ? route.key : 'search') : null, // not the search words themselves
             widgets: [...document.querySelectorAll('[data-item-id]')]
                 .filter(element => element.getAttribute('data-item-id').includes('"'))
                 .slice(0, 5)
@@ -2085,8 +2368,18 @@
         return Boolean(host) && domains.some(domain => host === domain || host.endsWith(`.${domain}`));
     }
 
+    // Entries are domains (subdomains included) or a host followed by a path prefix ("host/owner/").
     function isAllowedHost(url, domains) {
-        return !domains || hostMatches(safeHost(url), domains);
+        if (!domains) return true;
+        const parsed = tryParseUrl(url);
+        if (!parsed) return false;
+        const host = parsed.hostname.replace(/^www\./, '');
+        return domains.some(entry => {
+            const slash = entry.indexOf('/');
+            return slash < 0
+                ? hostMatches(host, [entry])
+                : host === entry.slice(0, slash) && parsed.pathname.startsWith(entry.slice(slash));
+        });
     }
 
     function appendQuery(url, query) {
@@ -2096,12 +2389,23 @@
     }
 
     function fileNameFromHeaders(headers) {
-        const match = (headers || '').match(/content-disposition:[^\n]*?filename\*?=(?:UTF-8'')?"?([^";\r\n]+)/i);
+        const match = (headerValue(headers, 'content-disposition') || '').slice(0, 1024).match(/filename\*?=(?:UTF-8'')?"?([^";\r\n]+)/i);
         return match ? safeDecode(match[1]) : null;
     }
 
+    // One response header's value, read line by line: headers are third-party text, and a regex across the whole
+    // block can be made to backtrack for seconds on a crafted header.
+    function headerValue(headers, name) {
+        const prefix = `${name.toLowerCase()}:`;
+        for (const line of String(headers || '').split('\n')) {
+            if (line.slice(0, prefix.length).toLowerCase() === prefix) return line.slice(prefix.length).trim() || null;
+        }
+        return null;
+    }
+
     function versionFromFileName(fileName) {
-        return fileName?.match(/_v?(\d+(?:\.\d+)+[\w.-]*?)_/)?.[1] || null;
+        // Real file names are short; the cap keeps this backtracking pattern cheap on a crafted one.
+        return fileName?.slice(0, 255).match(/_v?(\d+(?:\.\d+)+[\w.-]*?)_/)?.[1] || null;
     }
 
     function safeDecode(value) {
@@ -2160,7 +2464,8 @@
             }
             .pas-root *, .pas-root *::before, .pas-root *::after { box-sizing: inherit; }
             .pas-root [hidden], .pas-root[hidden] { display: none !important; }
-            .pas-root button, .pas-root input { font: inherit; color: inherit; }
+            /* :where() keeps this reset at zero specificity, so component rules below (.pas-main, .pas-text-btn…) win. */
+            :where(.pas-root) button, :where(.pas-root) input { font: inherit; color: inherit; }
             .pas-root :focus-visible { outline: 2px solid var(--pas-primary); outline-offset: 2px; }
             .pas-icon { width: 18px; height: 18px; fill: currentColor; flex: none; }
 
@@ -2169,8 +2474,8 @@
             .pas-after-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
             /* Morphe brand gradient with white text: readable on Play's light pages and dark app banners alike. */
             .pas-chip {
-                position: relative; display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px 0 10px;
-                border: 0; border-radius: 8px; background: linear-gradient(135deg, ${MORPHE_BLUE} 0%, ${MORPHE_TEAL} 100%);
+                position: relative; display: inline-flex; align-items: center; gap: 6px; height: 40px; min-height: 0; padding-block: 0; padding-inline: 10px 14px;
+                border: 0; border-radius: 8px; background: linear-gradient(135deg, ${MORPHE_BLUE} 0%, ${MORPHE_TEAL_TEXT} 100%);
                 box-shadow: 0 1px 2px rgb(0 0 0 / .25); color: #fff !important; text-decoration: none !important;
                 font: 500 14px/20px "Google Sans", Roboto, Arial, sans-serif; white-space: nowrap; text-shadow: 0 1px 1px rgb(0 0 0 / .25);
             }
@@ -2178,9 +2483,9 @@
             .pas-chip:hover::after { opacity: .12; }
             .pas-chip:active::after { opacity: .2; }
             .pas-chip .pas-icon { color: #fff; }
-            .pas-badge.pas-badge-morphe { border-color: transparent; background: linear-gradient(135deg, ${MORPHE_BLUE} 0%, ${MORPHE_TEAL} 100%); color: #fff; }
+            .pas-badge.pas-badge-morphe { border-color: transparent; background: linear-gradient(135deg, ${MORPHE_BLUE} 0%, ${MORPHE_TEAL_TEXT} 100%); color: #fff; }
             .pas-main {
-                position: relative; display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px 0 14px;
+                position: relative; display: inline-flex; align-items: center; gap: 6px; height: 40px; min-height: 0; padding-block: 0; padding-inline: 14px 12px;
                 border: 0; border-radius: 8px; background: var(--pas-tonal); color: var(--pas-on-tonal);
                 font: 500 14px/20px "Google Sans", Roboto, Arial, sans-serif; letter-spacing: .01em; white-space: nowrap; cursor: pointer;
             }
@@ -2193,15 +2498,15 @@
             .pas-menu {
                 position: fixed; z-index: 2147483000; display: flex; flex-direction: column; width: 360px; max-height: 600px;
                 overflow: hidden; background: var(--pas-surface); border-radius: 16px; box-shadow: var(--pas-shadow);
-                font-size: 14px; line-height: 20px; text-align: left;
+                font-size: 14px; line-height: 20px; text-align: start;
             }
             .pas-menu:focus { outline: none; }
-            .pas-header { display: flex; align-items: flex-start; gap: 8px; padding: 14px 8px 6px 20px; }
+            .pas-header { display: flex; align-items: flex-start; gap: 8px; padding-block: 14px 6px; padding-inline: 20px 8px; }
             .pas-heading { flex: 1; min-width: 0; }
             .pas-title { font: 500 16px/24px "Google Sans", Roboto, Arial, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .pas-pkg-row { display: flex; align-items: center; gap: 2px; color: var(--pas-muted); }
             .pas-pkg { min-width: 0; padding: 0; background: none; color: inherit; font: 12px/16px "Roboto Mono", ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-            .pas-icon-btn { flex: none; display: inline-grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--pas-muted); cursor: pointer; }
+            .pas-icon-btn { flex: none; display: inline-grid; place-items: center; width: 36px; height: 36px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--pas-muted); cursor: pointer; }
             .pas-icon-btn:hover { background: var(--pas-hover); }
             .pas-pkg-row .pas-icon-btn { width: 28px; height: 28px; }
             .pas-pkg-row .pas-icon { width: 15px; height: 15px; }
@@ -2225,7 +2530,7 @@
             .pas-row {
                 flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px 12px;
                 border: 0; border-radius: 12px; background: transparent; color: var(--pas-on); font: inherit;
-                text-align: left; text-decoration: none; cursor: pointer;
+                text-align: start; text-decoration: none; cursor: pointer;
             }
             .pas-row:hover, .pas-row-side:hover, .pas-switch:hover { background: var(--pas-hover); }
             .pas-row:active { background: var(--pas-pressed); }
@@ -2236,14 +2541,17 @@
             .pas-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
             .pas-row-label { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .pas-row-sub { color: var(--pas-muted); font: 12px/16px Roboto, Arial, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            /* Source status can say what to do ("Cloudflare check — open the site"): two lines rather than cut off. */
+            .pas-row .pas-row-sub { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
             .pas-row-sub[data-tone="ok"] { color: var(--pas-ok); }
             .pas-row-sub[data-tone="warn"] { color: var(--pas-warn); }
             .pas-row-sub[data-tone="error"] { color: var(--pas-error); }
             .pas-badge { flex: none; padding: 1px 8px; border: 1px solid var(--pas-outline); border-radius: 8px; color: var(--pas-muted); font-size: 11px; font-weight: 500; line-height: 16px; }
-            .pas-item.is-missing .pas-row-label, .pas-item.is-missing .pas-dot, .pas-item.is-missing .pas-badge { opacity: .5; }
+            .pas-item.is-missing .pas-row-label { color: var(--pas-muted); }
+            .pas-item.is-missing .pas-dot { opacity: .5; }
             .pas-spinner { flex: none; width: 18px; height: 18px; border: 2px solid var(--pas-outline); border-top-color: var(--pas-primary); border-radius: 50%; animation: pas-spin .8s linear infinite; }
             @keyframes pas-spin { to { transform: rotate(360deg); } }
-            .pas-files { margin: 0 8px 8px 34px; padding: 2px 0 2px 10px; border-inline-start: 2px solid var(--pas-divider); }
+            .pas-files { margin-block: 0 8px; margin-inline: 34px 8px; padding-block: 2px; padding-inline: 10px 0; border-inline-start: 2px solid var(--pas-divider); }
             .pas-files-intro { margin: 2px 8px; color: var(--pas-muted); font-size: 12px; line-height: 16px; }
             .pas-file { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 8px; color: var(--pas-primary); font-size: 13px; text-decoration: none; }
             .pas-file:hover { background: var(--pas-hover); }
@@ -2253,7 +2561,7 @@
             .pas-empty { margin: 16px 12px; color: var(--pas-muted); text-align: center; }
             .pas-footer { display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-top: 1px solid var(--pas-divider); }
             .pas-text-btn {
-                display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border: 0; border-radius: 18px;
+                display: inline-flex; align-items: center; gap: 6px; height: 36px; min-height: 0; padding: 0 12px; border: 0; border-radius: 18px;
                 background: transparent; color: var(--pas-primary); font: 500 14px "Google Sans", Roboto, Arial, sans-serif; cursor: pointer;
             }
             .pas-text-btn:hover { background: color-mix(in srgb, var(--pas-primary) 10%, transparent); }
@@ -2263,10 +2571,11 @@
             .pas-support .pas-icon { color: #ff5e5b; }
             .pas-support:hover { background: color-mix(in srgb, #ff5e5b 12%, transparent); }
             .pas-support-card {
-                display: flex; align-items: center; gap: 12px; margin: 4px; padding: 12px 12px 12px 16px; border-radius: 12px;
+                display: flex; align-items: center; gap: 12px; margin: 4px; padding-block: 12px; padding-inline: 16px 12px; border-radius: 12px;
                 background: color-mix(in srgb, #ff5e5b 9%, var(--pas-surface));
             }
             .pas-wrap { white-space: normal; }
+            .pas-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
             .pas-more-link { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; color: var(--pas-primary); font: 500 12px/16px "Google Sans", Roboto, Arial, sans-serif; text-decoration: none; }
             .pas-more-link:hover { text-decoration: underline; }
             .pas-more-link .pas-icon { width: 14px; height: 14px; color: ${MORPHE_TEAL}; }
@@ -2280,14 +2589,15 @@
                 border-radius: 10px; background: var(--pas-surface-2); cursor: pointer; transition: background .15s, border-color .15s;
             }
             .pas-switch input::before {
-                content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+                content: ""; position: absolute; top: 2px; inset-inline-start: 2px; width: 12px; height: 12px; border-radius: 50%;
                 background: var(--pas-outline); transition: transform .15s, background .15s;
             }
             .pas-switch input:checked { background: var(--pas-primary); border-color: var(--pas-primary); }
             .pas-switch input:checked::before { transform: translateX(16px); background: var(--pas-surface); }
+            .pas-root:dir(rtl) .pas-switch input:checked::before { transform: translateX(-16px); }
 
             .pas-banner {
-                position: fixed; right: 24px; bottom: 24px; z-index: 2147482000; display: flex; align-items: center; gap: 12px;
+                position: fixed; inset-inline-end: 24px; bottom: 24px; z-index: 2147482000; display: flex; align-items: center; gap: 12px;
                 max-width: min(460px, calc(100vw - 32px)); padding: 12px 8px 12px 16px; border-radius: 16px;
                 background: var(--pas-surface); box-shadow: var(--pas-shadow); font-size: 14px; line-height: 20px;
             }

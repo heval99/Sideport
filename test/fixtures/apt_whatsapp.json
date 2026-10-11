@@ -1,0 +1,43 @@
+{
+ "info": {
+  "status": "OK"
+ },
+ "datalist": {
+  "list": [
+   {
+    "id": 77055723,
+    "name": "WhatsApp Messenger",
+    "package": "com.whatsapp",
+    "store": {
+     "name": "aptoide-web"
+    },
+    "file": {
+     "vername": "2.26.40.7",
+     "vercode": 264000703,
+     "path": "https://url-provider.aptoide.com/download/cGFja2FnZV9uYW1lPWNvbS53aGF0c2FwcCZhcGtfbWQ1c3VtPTg2Y2ExZTNlMGE5YmE3NzkzNzAyNDhhZTcxMjk4MDYyJnZlcmNvZGU9MjY0MDAwNzAzJmxvY2FsZT1lbl9HQiZhYWI9MSZxPWJYbERVRlU5WVhKdE5qUXRkamhoTEdGeWJXVmhZbWt0ZGpkaExHRnliV1ZoWW1rbWJHVmhibUpoWTJzOU1BJnVybF9hcHRvaWRlPWh0dHBzJTNBJTJGJTJGcG9vbC5hcGsuYXB0b2lkZS5jb20lMkZhcHRvaWRlLXdlYiUyRmNvbS13aGF0c2FwcC0yNjQwMDA3MDMtNzcwNTU3MjMtODZjYTFlM2UwYTliYTc3OTM3MDI0OGFlNzEyOTgwNjIuYXBr",
+     "path_alt": "https://url-provider.aptoide.com/download/cGFja2FnZV9uYW1lPWNvbS53aGF0c2FwcCZhcGtfbWQ1c3VtPTg2Y2ExZTNlMGE5YmE3NzkzNzAyNDhhZTcxMjk4MDYyJnZlcmNvZGU9MjY0MDAwNzAzJmxvY2FsZT1lbl9HQiZhYWI9MSZxPWJYbERVRlU5WVhKdE5qUXRkamhoTEdGeWJXVmhZbWt0ZGpkaExHRnliV1ZoWW1rbWJHVmhibUpoWTJzOU1BJnVybF9hcHRvaWRlPWh0dHBzJTNBJTJGJTJGcG9vbC5hcGsuYXB0b2lkZS5jb20lMkZhcHRvaWRlLXdlYiUyRmNvbS13aGF0c2FwcC0yNjQwMDA3MDMtNzcwNTU3MjMtODZjYTFlM2UwYTliYTc3OTM3MDI0OGFlNzEyOTgwNjIuYXBr",
+     "malware": {
+      "rank": "TRUSTED"
+     }
+    }
+   },
+   {
+    "id": 76836793,
+    "name": "Clash of Kings",
+    "package": "com.hcg.cok.gp",
+    "store": {
+     "name": "aptoide-web"
+    },
+    "file": {
+     "vername": "12.06.0",
+     "vercode": 762870,
+     "path": "https://pool.apk.aptoide.com/aptoide-web/com-hcg-cok-gp-762870-76836793-37d372615087c050c24e909f14217305.apk",
+     "path_alt": "https://pool.apk.aptoide.com/aptoide-web/com-hcg-cok-gp-762870-76836793-37d372615087c050c24e909f14217305.apk",
+     "malware": {
+      "rank": "TRUSTED"
+     }
+    }
+   }
+  ]
+ }
+}
