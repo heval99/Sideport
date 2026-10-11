@@ -258,7 +258,9 @@ test('SP-11 guard: quick toggles in one tab are all saved, and Reset writes the 
     assert.deepEqual([saved.showMods, saved.autoCheck, saved.sources.uptodown], [true, false, false]);
     t.sp.setSettings(JSON.parse(JSON.stringify(saved)));
     t.sp.openMenu('settings', false);
-    [...t.document.querySelectorAll('.pas-footer .pas-text-btn')].find(b => b.textContent === 'Reset').click();
+    const reset = [...t.document.querySelectorAll('.pas-footer .pas-text-btn')].find(b => b.textContent === 'Reset');
+    reset.click(); // asks first (UX-07)…
+    reset.click(); // …and resets on the second click
     await wait(50);
     saved = store.get('sideport-settings-v1');
     assert.deepEqual([saved.showMods, saved.autoCheck, saved.sources.uptodown], [false, true, true]);
@@ -431,9 +433,10 @@ test('SP-25: on a right-to-left page the menu lines up with the button\'s right 
     const t = await boot({ html: detailsPage('com.example.app', 'App').replace('<html>', '<html dir="rtl">'), route: d => (isMorphe(d.url) ? emptyMorphe : { status: 404 }) });
     t.sp.state.mount.anchor.getBoundingClientRect = () => ({ top: 100, bottom: 136, left: 600, right: 720, width: 120, height: 36 });
     Object.defineProperty(t.document.documentElement, 'clientWidth', { value: 1000, configurable: true });
+    Object.defineProperty(t.window, 'innerWidth', { value: 1015, configurable: true }); // 15 px scrollbar, on the left in RTL
     t.sp.openMenu('sources', false);
     assert.equal(t.sp.state.menu.rtl, true);
-    assert.equal(t.sp.state.menu.root.style.left, '360px'); // right edge 720 - menu width 360
+    assert.equal(t.sp.state.menu.root.style.left, '345px'); // right edge 720 - menu width 360 - left scrollbar 15 (UX-10)
     t.window.close();
 });
 

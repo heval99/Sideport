@@ -15,7 +15,7 @@ const EXPOSE = `state, probeCache, probeQueue, inflightRequests, recentFailures,
     recheckSources, el, morpheAppUrl, renderSourcesView, saveSettings, loadSettings, fetchPatchIndex, probeApkPure,
     getSettings: () => settings, setSettings: value => { settings = value; }, getPatchIndexVar: () => patchIndex,
     setPatchIndex: value => { patchIndex = value; }, activeProbes: () => activeProbes, findActionWidget, applyTheme,
-    isAllowedHost, renderPatchChip, scanRepoPage, parseRepoPage, updateRow, ensureMenu, attachPatchChip, readCachedPatchIndex, fetchIndexPart, patchStatusText, onPatchIndexUpdated`;
+    isAllowedHost, renderPatchChip, scanRepoPage, parseRepoPage, headerValue, fileNameFromHeaders, collectDiagnostics, updateRow, ensureMenu, attachPatchChip, readCachedPatchIndex, fetchIndexPart, patchStatusText, onPatchIndexUpdated`;
 
 function instrument(source, { fast = false, exportHook = true, count = [], replace = [] } = {}) {
     let code = source;
@@ -90,6 +90,12 @@ export async function boot({ url = 'https://play.google.com/store/apps/details?i
     window.open = (url) => { const tab = { closed: false, close() { this.closed = true; }, opener: 1, document: window.document.implementation.createHTMLDocument(''), location: { replace(u) { harness.opened.push(u); } } }; if (url) harness.opened.push(url); return tab; };
     window.__perf = {};
     harness.code = instrument(SOURCE, { fast, exportHook, count, replace });
+    // Closing a jsdom window removes its DOM, which would fire the script's observers after its globals are gone.
+    const observers = [];
+    const NativeObserver = window.MutationObserver;
+    window.MutationObserver = class extends NativeObserver { constructor(callback) { super(callback); observers.push(this); } };
+    const nativeClose = window.close.bind(window);
+    window.close = () => { observers.forEach(observer => observer.disconnect()); nativeClose(); };
     if (beforeEval) beforeEval(window);
     try {
         window.eval(harness.code);
