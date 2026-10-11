@@ -1,0 +1,16 @@
+{
+  "name": "sideport-tests",
+  "private": true,
+  "description": "Test setup for sideport.user.js. The userscript itself has no dependencies and needs no build.",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "engines": {
+    "node": ">=20.10"
+  },
+  "scripts": {
+    "check": "node --check sideport.user.js",
+    "test": "node --test --test-concurrency=1 test/"
+  },
+  "devDependencies": {
+    "jsdom": "24.1.3"
+  }
+}
